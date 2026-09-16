@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://algebra.internal/schemas/purchase_intent.schema.json",
+  "title": "PurchaseIntent",
+  "description": "The normalized representation of what a user wants, shared across languages (Go: internal/domain/intent.PurchaseIntent; the future TypeScript SDK should generate its type from this file rather than hand-maintaining a second copy).",
+  "type": "object",
+  "required": ["intent_id", "user_id", "agent_id", "status", "items", "constraints"],
+  "properties": {
+    "intent_id": { "type": "string", "pattern": "^pi_" },
+    "user_id": { "type": "string" },
+    "agent_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "DRAFT", "DISCOVERING", "QUOTED", "POLICY_CHECK",
+        "POLICY_REJECTED", "APPROVAL_REQUIRED", "APPROVED", "REAPPROVAL_REQUIRED",
+        "EXECUTING", "AUTHENTICATION_REQUIRED", "SUCCEEDED",
+        "FAILED", "CANCELLED", "EXPIRED", "PARTIALLY_COMPLETED",
+        "MERCHANT_INTERVENTION_REQUIRED", "USER_INTERVENTION_REQUIRED"
+      ]
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["query", "quantity"],
+        "properties": {
+          "query": { "type": "string", "minLength": 1 },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "product_id": { "type": "string" }
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "required": ["max_total_minor_units", "currency"],
+      "properties": {
+        "max_total_minor_units": { "type": "integer", "minimum": 1 },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "delivery_profile": { "type": "string", "description": "Privacy alias, e.g. 'shipping:home'. Never a real address." },
+        "payment_profile": { "type": "string", "description": "Privacy alias, e.g. 'payment:personal'. Never a card/account number." },
+        "preferred_merchants": { "type": "array", "items": { "type": "string" } },
+        "excluded_merchants": { "type": "array", "items": { "type": "string" } },
+        "category": { "type": "string" },
+        "international": { "type": "boolean" }
+      }
+    },
+    "selected_quote_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" },
+    "metadata": {
+      "type": "object",
+      "description": "Non-sensitive context only. MUST NOT contain addresses, payment credentials, or any field internal/domain/audit's forbidden-key check would reject."
+    }
+  },
+  "additionalProperties": false
+}

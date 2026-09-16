@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go fmt / vet / build / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test (unit — no external dependencies)
+        run: go test ./... -race -count=1
+
+  security:
+    name: Security checks (no secret leakage in logs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Run redaction + audit-forbidden-key tests specifically
+        run: |
+          go test ./internal/platform/logging/... -run TestSensitiveValuesNeverAppearInLogOutput -v
+          go test ./internal/domain/audit/... -run TestValidate_RejectsSecretLookingKeys -v
+
+      - name: Check for accidentally committed .env
+        run: |
+          if [ -f .env ]; then
+            echo "A .env file is committed — this must never happen."
+            exit 1
+          fi
+
+  migrations:
+    name: Migration validation (applies cleanly to a fresh Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: algebra
+          POSTGRES_PASSWORD: algebra
+          POSTGRES_DB: algebra
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U algebra -d algebra"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgres://algebra:algebra@localhost:5432/algebra?sslmode=disable
+        run: |
+          cat <<'EOF' > /tmp/migrate_check.go
+          package main
+
+          import (
+          	"context"
+          	"log"
+          	"os"
+
+          	"github.com/project-algebra/algebra/internal/platform/postgres"
+          )
+
+          func main() {
+          	db, err := postgres.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+          	if err != nil {
+          		log.Fatal(err)
+          	}
+          	defer db.Close()
+          	if err := db.Migrate(context.Background(), "migrations"); err != nil {
+          		log.Fatal(err)
+          	}
+          }
+          EOF
+          go run /tmp/migrate_check.go
+
+# Python and TypeScript lint/test jobs are intentionally not listed here yet
+# — Phase 1 of this build is Go-only (internal/, connectors/, providers/,
+# cmd/). Add them alongside the Python discovery workers and TypeScript
+# SDK/frontend when those are actually built (see BUILD_PLAN.md's phase
+# list) rather than wiring up empty jobs now.

@@ -1,0 +1,358 @@
+openapi: 3.0.3
+info:
+  title: Project Algebra API
+  version: "1.0"
+  description: >
+    Agentic-commerce control plane REST API. Shares the exact same
+    application services as the MCP server (see docs/MCP.md) — this spec
+    documents the human/account-management surface plus the same commerce
+    endpoints an agent could also reach through MCP.
+servers:
+  - url: /api/v1
+security:
+  - agentToken: []
+components:
+  securitySchemes:
+    agentToken:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer token minted by POST /agents. Resolved server-side to an
+        AgentIdentity; see internal/domain/agent.
+    devUserID:
+      type: apiKey
+      in: header
+      name: X-User-ID
+      description: >
+        DEV-MODE PLACEHOLDER for human-only endpoints (approvals, payment
+        sources, privacy profiles). NOT a security boundary — see
+        docs/LOCAL_DEVELOPMENT.md. Production requires a real OIDC session.
+  schemas:
+    Money:
+      type: object
+      properties:
+        minor_units: { type: integer, format: int64 }
+        currency: { type: string, example: INR }
+    Intent:
+      type: object
+      properties:
+        intent_id: { type: string }
+        status:
+          type: string
+          enum: [DRAFT, DISCOVERING, QUOTED, POLICY_CHECK, POLICY_REJECTED, APPROVAL_REQUIRED, APPROVED, REAPPROVAL_REQUIRED, EXECUTING, AUTHENTICATION_REQUIRED, SUCCEEDED, FAILED, CANCELLED, EXPIRED, PARTIALLY_COMPLETED, MERCHANT_INTERVENTION_REQUIRED, USER_INTERVENTION_REQUIRED]
+        selected_quote_id: { type: string }
+    Quote:
+      type: object
+      description: A CheckoutQuote — the merchant-confirmed price breakdown. cart_id is intentionally never serialized to a transport response.
+      properties:
+        quote_id: { type: string }
+        merchant: { type: string }
+        subtotal: { $ref: '#/components/schemas/Money' }
+        coupon_discount: { $ref: '#/components/schemas/Money' }
+        delivery_fee: { $ref: '#/components/schemas/Money' }
+        final_payable: { $ref: '#/components/schemas/Money' }
+        effective_cost: { $ref: '#/components/schemas/Money' }
+        expires_at: { type: string, format: date-time }
+    PolicyDecision:
+      type: object
+      properties:
+        decision: { type: string, enum: [ALLOW, DENY, REQUIRE_APPROVAL] }
+        reason_codes: { type: array, items: { type: string } }
+        policy_version: { type: string }
+    Order:
+      type: object
+      properties:
+        order_id: { type: string }
+        merchant: { type: string }
+        merchant_order_id: { type: string }
+        total: { $ref: '#/components/schemas/Money' }
+        status: { type: string }
+        provider_mode: { type: string, enum: [mock, sandbox, real] }
+    PaymentSource:
+      type: object
+      description: Never carries a card number, CVV, or vault token — see docs/PAYMENT_SECURITY.md.
+      properties:
+        id: { type: string }
+        alias: { type: string, example: "payment:personal" }
+        type: { type: string, enum: [CARD, CRYPTO_CARD, VIRTUAL_CARD, WALLET, STABLECOIN_ACCOUNT, BANK, UPI] }
+        network: { type: string }
+        last4: { type: string }
+        nickname: { type: string }
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+paths:
+  /users:
+    post:
+      summary: Create a user (dev-mode bootstrap — see docs/LOCAL_DEVELOPMENT.md)
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { email: { type: string } }
+      responses:
+        '201': { description: Created }
+  /agents:
+    post:
+      summary: Mint a new AgentIdentity bearer token (shown exactly once)
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string }
+                client_id: { type: string }
+                name: { type: string }
+                permissions:
+                  type: array
+                  items: { type: string, enum: [shopping.read, shopping.create_intent, shopping.execute, payments.request, orders.read, profiles.read, policy.read] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { agent_id: { type: string }, token: { type: string } }
+  /agents/{id}/revoke:
+    post:
+      summary: Revoke an agent's token immediately
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /intents:
+    post:
+      summary: commerce.create_purchase_intent
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties: { query: { type: string }, quantity: { type: integer } }
+                constraints:
+                  type: object
+                  properties:
+                    max_total_minor_units: { type: integer }
+                    currency: { type: string }
+                    delivery_profile: { type: string }
+                    payment_profile: { type: string }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Intent' } } } }
+  /intents/{id}:
+    get:
+      summary: commerce.get_purchase_intent
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Intent' } } } } }
+  /intents/{id}/cancel:
+    post:
+      summary: commerce.cancel_purchase
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /intents/{id}/discover:
+    post:
+      summary: Run merchant discovery for this intent
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: OK
+          content: { application/json: { schema: { type: object, properties: { quotes: { type: array, items: { $ref: '#/components/schemas/Quote' } } } } } }
+  /intents/{id}/quotes:
+    get:
+      summary: commerce.get_quotes (read cached quotes without re-running discovery)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: OK
+          content: { application/json: { schema: { type: object, properties: { quotes: { type: array, items: { $ref: '#/components/schemas/Quote' } } } } } }
+  /intents/{id}/select-quote:
+    post:
+      summary: commerce.select_quote
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { quote_id: { type: string } } } } }
+      responses: { '200': { description: OK } }
+  /intents/{id}/request-purchase:
+    post:
+      summary: commerce.request_purchase — evaluate policy, may create an Approval
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyDecision' } } } } }
+  /intents/{id}/policy-preview:
+    get:
+      summary: policy.evaluate_intent — dry run, no side effects
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyDecision' } } } } }
+  /intents/{id}/policy-explain:
+    get:
+      summary: policy.explain_decision
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PolicyDecision' } } } } }
+  /intents/{id}/execute:
+    post:
+      summary: Execute an APPROVED intent (refreshes quote, re-checks policy, calls the merchant connector)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  intent_status: { type: string }
+                  order: { $ref: '#/components/schemas/Order' }
+                  reason: { type: string }
+  /intents/{id}/order:
+    get:
+      summary: commerce.get_order_status
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } } }
+  /intents/{id}/receipt:
+    get:
+      summary: commerce.get_receipt
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } } }
+  /intents/{id}/complete-authentication:
+    post:
+      summary: Resume an intent parked in AUTHENTICATION_REQUIRED after the user completed 3DS/OTP/UPI on their own device
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                merchant_order_id: { type: string }
+                success: { type: boolean }
+      responses: { '200': { description: OK } }
+  /intents/{id}/cancel-order:
+    post:
+      summary: Ask the MERCHANT to cancel the placed order (a merchant refusal surfaces as an error; Algebra never cancels locally on its own say-so)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        '409': { description: Merchant refused (already shipped, past cancellation window) }
+  /intents/{id}/audit:
+    get:
+      summary: The append-only audit trail for this intent — which agent requested it, what policy decided, what the user approved, what was charged
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /intents/{id}/approval:
+    get:
+      summary: Get the current approval for an intent (what the Approval UI renders before Approve/Reject)
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /approvals/{id}/approve:
+    post:
+      summary: The actual "Approve" button behind the Approval UI — a user action (X-User-ID dev placeholder)
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /approvals/{id}/reject:
+    post:
+      summary: The "Reject" button
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /approvals/{id}/reapprove:
+    post:
+      summary: Re-confirm an approval after REAPPROVAL_REQUIRED (merchant price drifted beyond tolerance)
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /payment-sources:
+    get:
+      summary: payments.list_sources
+      responses:
+        '200':
+          description: OK
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PaymentSource' } } } }
+    post:
+      summary: Add a card via a vault provider_nonce (never a raw PAN) — a user action
+      security: [{ devUserID: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider_nonce: { type: string }
+                alias: { type: string }
+                nickname: { type: string }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentSource' } } } } }
+  /payment-sources/{id}/revoke:
+    post:
+      summary: Revoke a payment source
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK } }
+  /merchants:
+    get:
+      summary: commerce.list_merchants — every merchant option with its computed capability matrix and readiness status
+      security: []
+      responses:
+        '200':
+          description: Merchant options, sorted by name. See docs/MERCHANT_CONNECTORS.md.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name, mode, capabilities]
+                  properties:
+                    name: { type: string, example: swiggy_instamart, description: "Name used in constraints.preferred_merchants / excluded_merchants" }
+                    mode: { type: string, enum: [real, sandbox, mock] }
+                    capabilities:
+                      type: object
+                      properties:
+                        search: { type: boolean }
+                        cart: { type: boolean }
+                        checkout: { type: boolean }
+                        coupons: { type: boolean }
+                        order_tracking: { type: boolean }
+                    status:
+                      type: object
+                      properties:
+                        integration: { type: string, enum: [mock, official_mcp, official_api, affiliate_api, deep_link_handoff, not_implemented] }
+                        ready: { type: boolean, description: "True only when what the connector offers works right now" }
+                        detail: { type: string, description: "Plain-language readiness or missing setup; never contains credentials or personal data" }
+                        source: { type: string, format: uri, description: "Public documentation the integration is built against" }
+  /profiles/shipping:
+    post:
+      summary: Create a shipping profile (encrypted at rest) — a user action, never exposed via MCP
+      security: [{ devUserID: [] }]
+      responses: { '201': { description: Created } }
+    get:
+      summary: List shipping profile aliases only — never the resolved address
+      security: [{ devUserID: [] }]
+      responses: { '200': { description: OK } }
+  /webhooks/{provider}:
+    post:
+      summary: Generic inbound webhook receiver — HMAC-verified, deduplicated, rejected if no secret is configured for {provider}
+      security: []
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: X-Algebra-Signature, in: header, schema: { type: string }, description: "sha256=<hex hmac> — see internal/app/webhook_service.go" }
+        - { name: X-Algebra-Event-ID, in: header, schema: { type: string }, description: "optional; falls back to a payload fingerprint for dedup if omitted" }
+      responses:
+        '200': { description: Accepted (ok:false if this was a duplicate delivery) }
+        '401': { description: Signature invalid or no secret configured for this provider }
+  /profiles/billing:
+    post:
+      summary: Create a billing profile (encrypted at rest) — a user action, never exposed via MCP
+      security: [{ devUserID: [] }]
+      responses: { '201': { description: Created } }
