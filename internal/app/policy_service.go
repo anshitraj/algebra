@@ -9,8 +9,8 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/approval"
 	"github.com/project-algebra/algebra/internal/domain/audit"
 	"github.com/project-algebra/algebra/internal/domain/intent"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
+	"github.com/project-algebra/algebra/policy"
 )
 
 type PolicyService struct {

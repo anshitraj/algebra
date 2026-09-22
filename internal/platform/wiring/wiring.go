@@ -13,15 +13,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/project-algebra/algebra/connectors/websearch"
 	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/confidential"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/platform/config"
 	"github.com/project-algebra/algebra/internal/platform/postgres"
 	redisplatform "github.com/project-algebra/algebra/internal/platform/redis"
 	"github.com/project-algebra/algebra/internal/platform/resilience"
+	"github.com/project-algebra/algebra/policy"
 	"github.com/project-algebra/algebra/providers/arcium"
 	"github.com/project-algebra/algebra/providers/vault"
 )
@@ -32,20 +33,23 @@ import (
 type Bundle struct {
 	DB *postgres.DB
 
-	Agents      *postgres.AgentRepo
-	AgentSvc    *app.AgentService
-	Users       *app.UserService
-	Intents     *app.IntentService
-	Discovery   *app.DiscoveryService
-	Quotes      *app.QuoteService
-	Policy      *app.PolicyService
-	Approvals   *app.ApprovalService
-	Orders      *app.OrderService
-	Payments    *app.PaymentService
-	Privacy     *privacy.Resolver
-	Connectors  *app.ConnectorRegistry
-	Idempotency app.IdempotencyStore
-	Audit       *postgres.AuditRepo
+	Agents            *postgres.AgentRepo
+	AgentSvc          *app.AgentService
+	Integrators       *postgres.IntegratorRepo
+	IntegratorSvc     *app.IntegratorService
+	TransactionPolicy *app.TransactionPolicyService
+	Users             *app.UserService
+	Intents           *app.IntentService
+	Discovery         *app.DiscoveryService
+	Quotes            *app.QuoteService
+	Policy            *app.PolicyService
+	Approvals         *app.ApprovalService
+	Orders            *app.OrderService
+	Payments          *app.PaymentService
+	Privacy           *privacy.Resolver
+	Connectors        *app.ConnectorRegistry
+	Idempotency       app.IdempotencyStore
+	Audit             *postgres.AuditRepo
 
 	// Redis is nil if REDIS_ADDR was unset or unreachable at startup —
 	// every consumer (RateLimiter, Locker below) degrades gracefully when
@@ -110,12 +114,11 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	}
 	warmConnectors(connectors)
 
-	var policyProvider policy.Provider
-	if cfg.OmniClawServerURL != "" {
-		policyProvider = policy.NewOmniClawProvider(cfg.OmniClawServerURL, cfg.OmniClawToken)
-	} else {
-		policyProvider = policy.NewLocalProvider(policy.DefaultRules())
-	}
+	// LocalProvider is the sole policy authority — merchant/category/INR and
+	// crypto-rail (recipient/USDC) purchases alike — deterministic, no
+	// external service to reach. See policy.Rules and policy.Provider's doc
+	// comments.
+	var policyProvider policy.Provider = policy.NewLocalProvider(policy.DefaultRules())
 
 	cardVault := vault.NewSandboxProvider()
 
@@ -125,6 +128,16 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	discoverySvc := app.NewDiscoveryService(intents, agents, quotes, connectors, auditRepo, cfg.QuoteTTL)
 	discoverySvc.SetResilience(resilience.NewRegistry(5, 30*time.Second), cfg.Merchants.WithDefaults().ConnectorTimeout)
 	discoverySvc.SetURLAllowlist(merchant.NewAllowedDomains(cfg.MerchantURLAllowlist...))
+	// General web-search fallback is optional: off (commerce.web_search
+	// returns ErrNotImplemented) unless both env vars are set — SetWebSearcher
+	// is simply never called otherwise, and DiscoveryService.SearchWeb's nil
+	// check is what reports that honestly.
+	if cfg.GoogleSearchAPIKey != "" && cfg.GoogleSearchEngineID != "" {
+		discoverySvc.SetWebSearcher(websearch.New(websearch.Config{
+			APIKey:         cfg.GoogleSearchAPIKey,
+			SearchEngineID: cfg.GoogleSearchEngineID,
+		}))
+	}
 	quoteSvc := app.NewQuoteService(intents, agents, quotes, connectors)
 	policySvc := app.NewPolicyService(intents, agents, quotes, decisions, approvals, ledger, policyProvider, auditRepo, cfg.ApprovalTTL)
 	approvalSvc := app.NewApprovalService(intents, approvals, quoteSvc, auditRepo)
@@ -135,6 +148,9 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	orderSvc.SetPrivacyResolver(privacyResolver)
 	paymentSvc := app.NewPaymentService(paymentSources, agents, cardVault)
 	agentSvc := app.NewAgentService(agents)
+	integrators := postgres.NewIntegratorRepo(db)
+	integratorSvc := app.NewIntegratorService(integrators)
+	transactionPolicySvc := app.NewTransactionPolicyService(integrators, auditRepo)
 	userSvc := app.NewUserService(users)
 	webhookSvc := app.NewWebhookService(postgres.NewWebhookRepo(db), auditRepo, envWebhookSecret)
 	auditSvc := app.NewAuditService(auditRepo, agents)
@@ -158,7 +174,8 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	}
 
 	return &Bundle{
-		DB: db, Agents: agents, AgentSvc: agentSvc, Users: userSvc, Intents: intentSvc, Discovery: discoverySvc, Quotes: quoteSvc,
+		DB: db, Agents: agents, AgentSvc: agentSvc, Integrators: integrators, IntegratorSvc: integratorSvc, TransactionPolicy: transactionPolicySvc,
+		Users: userSvc, Intents: intentSvc, Discovery: discoverySvc, Quotes: quoteSvc,
 		Policy: policySvc, Approvals: approvalSvc, Orders: orderSvc, Payments: paymentSvc,
 		Privacy: privacyResolver, Connectors: connectors, Idempotency: idempotency, Audit: auditRepo,
 		Redis: redisClient, Limiter: limiter,

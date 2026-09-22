@@ -11,6 +11,8 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/quote"
+	"github.com/project-algebra/algebra/internal/domain/shared"
+	"github.com/project-algebra/algebra/internal/domain/websearch"
 	"github.com/project-algebra/algebra/internal/platform/resilience"
 )
 
@@ -35,6 +37,10 @@ type DiscoveryService struct {
 	// urlAllowlist filters merchant-supplied product URLs — see
 	// SetURLAllowlist.
 	urlAllowlist *merchant.AllowedDomains
+
+	// webSearch is the optional general web-search fallback — see
+	// SetWebSearcher and SearchWeb. Nil means the capability is off.
+	webSearch WebSearcher
 }
 
 func NewDiscoveryService(intents IntentStore, agents AgentStore, quotes QuoteStore, connectors *ConnectorRegistry, auditLogger audit.Logger, quoteTTL time.Duration) *DiscoveryService {
@@ -54,6 +60,14 @@ func (s *DiscoveryService) SetResilience(breakers *resilience.Registry, connecto
 // no filtering — correct only for a build with no real merchant connectors.
 func (s *DiscoveryService) SetURLAllowlist(allowed *merchant.AllowedDomains) {
 	s.urlAllowlist = allowed
+}
+
+// SetWebSearcher attaches the optional general web-search fallback. Called
+// once during wiring, only when GOOGLE_SEARCH_API_KEY and
+// GOOGLE_SEARCH_ENGINE_ID are configured. Nil (never called) means
+// SearchWeb always reports the capability as off.
+func (s *DiscoveryService) SetWebSearcher(ws WebSearcher) {
+	s.webSearch = ws
 }
 
 // sanitizeProductURLs blanks any product URL that isn't an https link to an
@@ -232,6 +246,25 @@ func (s *DiscoveryService) SearchProducts(ctx context.Context, agentID, query st
 		out = append(out, MerchantSearchResult{Merchant: c.Name(), Products: s.sanitizeProductURLs(products)})
 	}
 	return out, nil
+}
+
+// SearchWeb is the last-resort fallback when no connected merchant can find
+// the product: general web-search results (title/snippet/link only — no
+// price, no cart, never an order) for an agent to hand to the user, same
+// non-custodial shape as a merchant's HandoffURL but not scoped to one
+// storefront. Off (ErrNotImplemented) unless GOOGLE_SEARCH_API_KEY and
+// GOOGLE_SEARCH_ENGINE_ID are configured.
+func (s *DiscoveryService) SearchWeb(ctx context.Context, agentID, query string, limit int) ([]websearch.Result, error) {
+	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
+		return nil, err
+	}
+	if s.webSearch == nil {
+		return nil, fmt.Errorf("%w: web search fallback is not configured (set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID)", shared.ErrNotImplemented)
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	return s.webSearch.Search(ctx, query, limit)
 }
 
 // handoffLink returns a connector's merchant-owned search link, if it has

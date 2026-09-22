@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+:root {
+  --color-background: #f7f5f0;
+  --color-surface: #fbfaf6;
+  --color-foreground: #20241d;
+  --color-muted: #5b6355;
+
+  --color-primary: #3f5232;
+  --color-primary-soft: #7c9463;
+  --color-primary-tint: #eaeee2;
+
+  --color-accent: #b8792f;
+  --color-accent-tint: #f3e6d3;
+
+  --color-danger: #a6412d;
+  --color-danger-tint: #f3e0da;
+
+  --color-border: color-mix(in srgb, var(--color-foreground) 12%, transparent);
+  --color-border-strong: color-mix(in srgb, var(--color-foreground) 22%, transparent);
+}
+
+:root[data-theme="dark"] {
+  --color-background: #14170f;
+  --color-surface: #1b1f15;
+  --color-foreground: #edeae1;
+  --color-muted: #9ba38c;
+
+  --color-primary: #8fae6b;
+  --color-primary-soft: #5f7847;
+  --color-primary-tint: #232b1c;
+
+  --color-accent: #d9a153;
+  --color-accent-tint: #2c2419;
+
+  --color-danger: #d97b63;
+  --color-danger-tint: #2b1e19;
+
+  --color-border: color-mix(in srgb, var(--color-foreground) 14%, transparent);
+  --color-border-strong: color-mix(in srgb, var(--color-foreground) 26%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-background: #14170f;
+    --color-surface: #1b1f15;
+    --color-foreground: #edeae1;
+    --color-muted: #9ba38c;
+
+    --color-primary: #8fae6b;
+    --color-primary-soft: #5f7847;
+    --color-primary-tint: #232b1c;
+
+    --color-accent: #d9a153;
+    --color-accent-tint: #2c2419;
+
+    --color-danger: #d97b63;
+    --color-danger-tint: #2b1e19;
+
+    --color-border: color-mix(in srgb, var(--color-foreground) 14%, transparent);
+    --color-border-strong: color-mix(in srgb, var(--color-foreground) 26%, transparent);
+  }
+}
+
+@theme inline {
+  --color-background: var(--color-background);
+  --color-surface: var(--color-surface);
+  --color-foreground: var(--color-foreground);
+  --color-muted: var(--color-muted);
+  --color-primary: var(--color-primary);
+  --color-primary-soft: var(--color-primary-soft);
+  --color-primary-tint: var(--color-primary-tint);
+  --color-accent: var(--color-accent);
+  --color-accent-tint: var(--color-accent-tint);
+  --color-danger: var(--color-danger);
+  --color-danger-tint: var(--color-danger-tint);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+}
+
+/* Browser surfaces carry the design too — craft-floor.md */
+::selection {
+  background: var(--color-primary);
+  color: var(--color-primary-tint);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-background);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 8px;
+  border: 3px solid var(--color-background);
+}
+* {
+  scrollbar-color: var(--color-border-strong) var(--color-background);
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

@@ -28,6 +28,7 @@ import (
 
 	"github.com/project-algebra/algebra/internal/app"
 	agentpkg "github.com/project-algebra/algebra/internal/domain/agent"
+	integratorpkg "github.com/project-algebra/algebra/internal/domain/integrator"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
 )
@@ -37,16 +38,18 @@ import (
 // which is what keeps this server horizontally scalable and stateless at
 // the transport layer (mandate §5).
 type Server struct {
-	Agents      app.AgentStore
-	Intents     *app.IntentService
-	Discovery   *app.DiscoveryService
-	Quotes      *app.QuoteService
-	Policy      *app.PolicyService
-	Orders      *app.OrderService
-	Payments    *app.PaymentService
-	Privacy     *privacy.Resolver
-	Connectors  *app.ConnectorRegistry
-	Idempotency app.IdempotencyStore
+	Agents            app.AgentStore
+	Intents           *app.IntentService
+	Discovery         *app.DiscoveryService
+	Quotes            *app.QuoteService
+	Policy            *app.PolicyService
+	Orders            *app.OrderService
+	Payments          *app.PaymentService
+	Privacy           *privacy.Resolver
+	Connectors        *app.ConnectorRegistry
+	Idempotency       app.IdempotencyStore
+	Integrators       app.IntegratorStore
+	TransactionPolicy *app.TransactionPolicyService
 
 	// Limiter is optional (mandate §35/§49) — nil means no MCP-level rate
 	// limiting, which is fine for local stdio development and not fine for
@@ -66,6 +69,23 @@ func (srv *Server) resolveAgent(ctx context.Context, token string) (*agentpkg.Id
 		return nil, fmt.Errorf("agent token has been revoked")
 	}
 	return ag, nil
+}
+
+// resolveIntegrator is resolveAgent's counterpart for
+// policy.evaluate_transaction — an integrator token, never interchangeable
+// with an agent_token (an integrator has no shopping permissions).
+func (srv *Server) resolveIntegrator(ctx context.Context, token string) (*integratorpkg.Integrator, error) {
+	if token == "" {
+		return nil, fmt.Errorf("integrator_token is required")
+	}
+	integ, err := srv.Integrators.GetByTokenHash(ctx, agentpkg.HashToken(token))
+	if err != nil {
+		return nil, fmt.Errorf("invalid integrator_token: %w", err)
+	}
+	if integ.IsRevoked() {
+		return nil, fmt.Errorf("integrator token has been revoked")
+	}
+	return integ, nil
 }
 
 // stripInternal returns a copy of q safe for an agent to see: CartID is a

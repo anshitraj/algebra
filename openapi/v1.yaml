@@ -27,6 +27,14 @@ components:
         DEV-MODE PLACEHOLDER for human-only endpoints (approvals, payment
         sources, privacy profiles). NOT a security boundary — see
         docs/LOCAL_DEVELOPMENT.md. Production requires a real OIDC session.
+    integratorToken:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer token minted by POST /integrators. Resolved server-side to
+        an Integrator (internal/domain/integrator) — a third-party
+        application calling the standalone policy-evaluation surface, not
+        an AI shopping agent. Never interchangeable with agentToken.
   schemas:
     Money:
       type: object
@@ -59,6 +67,24 @@ components:
         decision: { type: string, enum: [ALLOW, DENY, REQUIRE_APPROVAL] }
         reason_codes: { type: array, items: { type: string } }
         policy_version: { type: string }
+    Conditions:
+      type: object
+      description: >
+        A third-party integrator's own budget/category/merchant policy —
+        the same shape as internal/domain/policy.Rules, minus the
+        crypto-rail fields (no counterpart in this card/wallet-shaped
+        request). Required on POST /policy/evaluate-transaction — pass {}
+        to explicitly allow everything; Algebra does not assume a default
+        budget policy on an integrator's behalf.
+      properties:
+        max_per_transaction_minor_units: { type: integer, format: int64 }
+        max_per_day_minor_units: { type: integer, format: int64 }
+        approval_threshold_minor_units: { type: integer, format: int64 }
+        allowed_merchants: { type: array, items: { type: string } }
+        blocked_merchants: { type: array, items: { type: string } }
+        blocked_categories: { type: array, items: { type: string } }
+        allowed_payment_profiles: { type: array, items: { type: string } }
+        international_requires_approval: { type: boolean }
     Order:
       type: object
       properties:
@@ -78,6 +104,7 @@ components:
         network: { type: string }
         last4: { type: string }
         nickname: { type: string }
+        revoked: { type: boolean }
     Error:
       type: object
       properties:
@@ -121,9 +148,81 @@ paths:
                 properties: { agent_id: { type: string }, token: { type: string } }
   /agents/{id}/revoke:
     post:
-      summary: Revoke an agent's token immediately
+      summary: Revoke an agent's token immediately — a user action, only the agent's own owner may revoke it
+      security: [{ devUserID: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: OK }, '403': { description: The agent does not belong to the caller } }
+  /integrators:
+    post:
+      summary: >
+        Mint a new Integrator bearer token (shown exactly once) — the B2B
+        counterpart to POST /agents, for a third-party application calling
+        POST /policy/evaluate-transaction. See docs/INTEGRATING.md.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { name: { type: string, example: Kite } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { integrator_id: { type: string }, token: { type: string } }
+  /integrators/{id}/revoke:
+    post:
+      summary: Revoke an integrator's token immediately
+      security: []
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses: { '200': { description: OK } }
+  /policy/evaluate-transaction:
+    post:
+      summary: >
+        Standalone policy decision for a third-party integrator's own
+        transaction — no Algebra purchase intent involved. See
+        docs/INTEGRATING.md for the full request/response reference and
+        worked examples.
+      security: [{ integratorToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [where, how_much, conditions]
+              properties:
+                who:
+                  type: object
+                  properties: { user_ref: { type: string, description: "the integrator's own opaque user identifier" } }
+                what:
+                  type: object
+                  properties: { category: { type: string } }
+                where:
+                  type: object
+                  properties:
+                    merchant: { type: string }
+                    international: { type: boolean }
+                how_much:
+                  type: object
+                  properties:
+                    amount_minor_units: { type: integer, format: int64 }
+                    currency: { type: string, example: USD }
+                    spend_today_minor_units: { type: integer, format: int64, description: "caller-supplied — Algebra keeps no ledger for transactions it never processes" }
+                with_what:
+                  type: object
+                  properties: { payment_ref: { type: string, description: "the integrator's own opaque payment-method reference" } }
+                conditions: { $ref: '#/components/schemas/Conditions' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyDecision' }
+        '400': { description: Missing conditions, or the integrator token is invalid/revoked }
   /intents:
     post:
       summary: commerce.create_purchase_intent
@@ -295,10 +394,10 @@ paths:
       responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentSource' } } } } }
   /payment-sources/{id}/revoke:
     post:
-      summary: Revoke a payment source
+      summary: Revoke a payment source — only the source's own owner may revoke it
       security: [{ devUserID: [] }]
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
-      responses: { '200': { description: OK } }
+      responses: { '200': { description: OK }, '403': { description: The payment source does not belong to the caller } }
   /merchants:
     get:
       summary: commerce.list_merchants — every merchant option with its computed capability matrix and readiness status

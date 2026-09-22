@@ -15,9 +15,9 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/money"
 	"github.com/project-algebra/algebra/internal/domain/order"
 	"github.com/project-algebra/algebra/internal/domain/payment"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
+	"github.com/project-algebra/algebra/policy"
 )
 
 // requireDB skips the test unless a real DATABASE_URL is configured — these

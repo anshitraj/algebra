@@ -14,9 +14,9 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/approval"
 	"github.com/project-algebra/algebra/internal/domain/intent"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/platform/resilience"
+	"github.com/project-algebra/algebra/policy"
 )
 
 // harness wires every app service against in-memory fakes plus the REAL

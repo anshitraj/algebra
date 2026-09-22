@@ -36,7 +36,7 @@ make test-integration   # needs `make dev-up` — real Postgres, sandbox E2E flo
 ```
 USER → AI AGENT → MCP (or REST) → Algebra
                                      ├── Intent          (PurchaseIntent + state machine)
-                                     ├── Policy           (OmniClaw-shaped PolicyProvider; ALLOW/DENY/REQUIRE_APPROVAL)
+                                     ├── Policy           (deterministic PolicyProvider — merchant/INR + crypto-rail rules; ALLOW/DENY/REQUIRE_APPROVAL)
                                      ├── Privacy          (alias → real value, only at merchant-execution time)
                                      ├── Merchant Router   (MerchantConnector: mock / Swiggy Instamart MCP / Zepto MCP / Amazon + Flipkart catalog APIs / Blinkit handoff)
                                      ├── Approval          (binds merchant+items+amount+payment source; expires)

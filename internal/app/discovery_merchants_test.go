@@ -11,7 +11,7 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
-	"github.com/project-algebra/algebra/internal/domain/policy"
+	"github.com/project-algebra/algebra/policy"
 )
 
 // searchOnlyFlipkart is the real Flipkart connector pointed at a local

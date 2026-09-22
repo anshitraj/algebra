@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/shared"
+	"github.com/project-algebra/algebra/policy"
 )
 
 type PolicyDecisionRepo struct{ db *DB }

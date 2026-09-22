@@ -215,26 +215,40 @@ func NewAllowedDomains(domains ...string) *AllowedDomains {
 // cannot turn this into an SSRF vector against 127.0.0.1, a private subnet,
 // or a cloud metadata endpoint at 169.254.169.254 (mandate §47/§49).
 func (a *AllowedDomains) ValidateURL(raw string) error {
-	u, err := url.Parse(raw)
+	u, err := ValidatePublicHTTPSURL(raw)
 	if err != nil {
-		return &ErrDomainNotAllowed{URL: raw, Reason: "unparseable URL"}
-	}
-	if u.Scheme != "https" {
-		return &ErrDomainNotAllowed{URL: raw, Reason: "scheme must be https"}
+		return err
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "" {
-		return &ErrDomainNotAllowed{URL: raw, Reason: "missing host"}
-	}
-	if isPrivateHost(host) {
-		return &ErrDomainNotAllowed{URL: raw, Reason: "host resolves to a loopback, private, or link-local address"}
-	}
 	for d := range a.domains {
 		if host == d || strings.HasSuffix(host, "."+d) {
 			return nil
 		}
 	}
 	return &ErrDomainNotAllowed{URL: raw, Reason: "host not on allowlist"}
+}
+
+// ValidatePublicHTTPSURL applies the same https-only,
+// no-loopback/private/link-local-address rule ValidateURL does, without a
+// domain allowlist — for a caller that must accept any public domain (e.g.
+// general web search results, not one merchant's own catalog) but still
+// has to refuse an SSRF-shaped URL. Returns the parsed URL on success.
+func ValidatePublicHTTPSURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, &ErrDomainNotAllowed{URL: raw, Reason: "unparseable URL"}
+	}
+	if u.Scheme != "https" {
+		return nil, &ErrDomainNotAllowed{URL: raw, Reason: "scheme must be https"}
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return nil, &ErrDomainNotAllowed{URL: raw, Reason: "missing host"}
+	}
+	if isPrivateHost(host) {
+		return nil, &ErrDomainNotAllowed{URL: raw, Reason: "host resolves to a loopback, private, or link-local address"}
+	}
+	return u, nil
 }
 
 // isPrivateHost reports whether a host is a literal IP in a

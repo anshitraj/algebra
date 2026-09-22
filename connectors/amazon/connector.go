@@ -33,6 +33,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,13 +72,22 @@ var tokenEndpoints = map[string]tokenEndpoint{
 	"3.3": {"https://api.amazon.co.jp/auth/o2/token", "creatorsapi::default"},
 }
 
-// searchResources are the response groups requested from searchItems.
-var searchResources = []string{
+// catalogResources are the response groups requested from both searchItems
+// and getItems — the same resource vocabulary applies to each per the
+// Creators API reference.
+var catalogResources = []string{
 	"itemInfo.title",
 	"itemInfo.byLineInfo",
 	"offersV2.listings.price",
 	"offersV2.listings.availability",
 }
+
+// asinRE matches an Amazon Standard Identification Number: 10 alphanumeric
+// characters (most product ASINs start with a letter; ISBN-10-derived ASINs
+// are all digits).
+var asinRE = regexp.MustCompile(`^[A-Z0-9]{10}$`)
+
+const maxCartItems = 10
 
 type Config struct {
 	CredentialID      string
@@ -199,37 +210,54 @@ type money struct {
 	Currency string  `json:"currency"`
 }
 
+// catalogItem is the item shape both searchItems and getItems return.
+type catalogItem struct {
+	ASIN          string `json:"asin"`
+	DetailPageURL string `json:"detailPageURL"`
+	ItemInfo      struct {
+		Title *struct {
+			DisplayValue string `json:"displayValue"`
+		} `json:"title"`
+		ByLineInfo *struct {
+			Brand *struct {
+				DisplayValue string `json:"displayValue"`
+			} `json:"brand"`
+		} `json:"byLineInfo"`
+	} `json:"itemInfo"`
+	OffersV2 *struct {
+		Listings []struct {
+			Price *struct {
+				Money *money `json:"money"`
+			} `json:"price"`
+			Availability *struct {
+				Type string `json:"type"`
+			} `json:"availability"`
+		} `json:"listings"`
+	} `json:"offersV2"`
+}
+
+type apiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type searchResponse struct {
 	SearchResult *struct {
-		Items []struct {
-			ASIN          string `json:"asin"`
-			DetailPageURL string `json:"detailPageURL"`
-			ItemInfo      struct {
-				Title *struct {
-					DisplayValue string `json:"displayValue"`
-				} `json:"title"`
-				ByLineInfo *struct {
-					Brand *struct {
-						DisplayValue string `json:"displayValue"`
-					} `json:"brand"`
-				} `json:"byLineInfo"`
-			} `json:"itemInfo"`
-			OffersV2 *struct {
-				Listings []struct {
-					Price *struct {
-						Money *money `json:"money"`
-					} `json:"price"`
-					Availability *struct {
-						Type string `json:"type"`
-					} `json:"availability"`
-				} `json:"listings"`
-			} `json:"offersV2"`
-		} `json:"items"`
+		Items []catalogItem `json:"items"`
 	} `json:"searchResult"`
-	Errors []struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"errors"`
+	Errors []apiError `json:"errors"`
+}
+
+// itemsResponse is getItems' response envelope. Its item shape and error
+// container follow the same lowerCamelCase convention as searchItems
+// (verified live); the "itemsResult" envelope name itself mirrors PA-API
+// 5's GetItems (ItemsResult/Items) translated to that convention — not run
+// against a live getItems call in this environment.
+type itemsResponse struct {
+	ItemsResult *struct {
+		Items []catalogItem `json:"items"`
+	} `json:"itemsResult"`
+	Errors []apiError `json:"errors"`
 }
 
 func (c *Connector) SearchProducts(ctx context.Context, query string, limit int) ([]merchant.Product, error) {
@@ -252,7 +280,7 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 		"partnerTag":  c.cfg.PartnerTag,
 		"marketplace": c.cfg.Marketplace,
 		"itemCount":   limit,
-		"resources":   searchResources,
+		"resources":   catalogResources,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("amazon: encoding search request: %w", err)
@@ -281,11 +309,11 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("amazon: Creators API rejected the credentials (HTTP %d)%s", resp.StatusCode, firstError(body))
+		return nil, fmt.Errorf("amazon: Creators API rejected the credentials (HTTP %d)%s", resp.StatusCode, firstError(body.Errors))
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, errors.New("amazon: Creators API rate limit reached")
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("amazon: Creators API returned HTTP %d%s", resp.StatusCode, firstError(body))
+		return nil, fmt.Errorf("amazon: Creators API returned HTTP %d%s", resp.StatusCode, firstError(body.Errors))
 	case decodeErr != nil:
 		return nil, fmt.Errorf("amazon: decoding search response: %w", decodeErr)
 	case body.SearchResult == nil:
@@ -297,44 +325,56 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 		if len(out) >= limit {
 			break
 		}
-		if it.ASIN == "" || it.ItemInfo.Title == nil || it.ItemInfo.Title.DisplayValue == "" || it.OffersV2 == nil {
-			continue
-		}
-		var minor int64
-		var currency, availability string
-		priced := false
-		for _, l := range it.OffersV2.Listings {
-			if l.Price == nil || l.Price.Money == nil {
-				continue
-			}
-			if v, ok := toMinorUnits(*l.Price.Money); ok {
-				minor, currency, priced = v, l.Price.Money.Currency, true
-				if l.Availability != nil {
-					availability = l.Availability.Type
-				}
-				break
-			}
-		}
-		if !priced {
+		p, ok := mapCatalogItem(it, math.Max(0.8-0.05*float64(len(out)), 0.3))
+		if !ok {
 			continue // an item with no priced offer can't be compared
 		}
-		brand := ""
-		if b := it.ItemInfo.ByLineInfo; b != nil && b.Brand != nil {
-			brand = b.Brand.DisplayValue
-		}
-		out = append(out, merchant.Product{
-			MerchantProductID: it.ASIN,
-			Merchant:          Name,
-			Brand:             sanitize.Text(brand, 80),
-			Name:              sanitize.Text(it.ItemInfo.Title.DisplayValue, 200),
-			PriceMinorUnits:   minor,
-			Currency:          currency,
-			Available:         strings.HasPrefix(strings.ToUpper(availability), "IN_STOCK"),
-			URL:               it.DetailPageURL,
-			Confidence:        math.Max(0.8-0.05*float64(len(out)), 0.3),
-		})
+		out = append(out, p)
 	}
 	return out, nil
+}
+
+// mapCatalogItem converts one Creators API item into a merchant.Product.
+// confidence is caller-assigned: a ranked search result's position, or 1.0
+// for a direct ASIN lookup that isn't a guess. Reports false for an item
+// with no priced offer — it can't be compared or bought.
+func mapCatalogItem(it catalogItem, confidence float64) (merchant.Product, bool) {
+	if it.ASIN == "" || it.ItemInfo.Title == nil || it.ItemInfo.Title.DisplayValue == "" || it.OffersV2 == nil {
+		return merchant.Product{}, false
+	}
+	var minor int64
+	var currency, availability string
+	priced := false
+	for _, l := range it.OffersV2.Listings {
+		if l.Price == nil || l.Price.Money == nil {
+			continue
+		}
+		if v, ok := toMinorUnits(*l.Price.Money); ok {
+			minor, currency, priced = v, l.Price.Money.Currency, true
+			if l.Availability != nil {
+				availability = l.Availability.Type
+			}
+			break
+		}
+	}
+	if !priced {
+		return merchant.Product{}, false
+	}
+	brand := ""
+	if b := it.ItemInfo.ByLineInfo; b != nil && b.Brand != nil {
+		brand = b.Brand.DisplayValue
+	}
+	return merchant.Product{
+		MerchantProductID: it.ASIN,
+		Merchant:          Name,
+		Brand:             sanitize.Text(brand, 80),
+		Name:              sanitize.Text(it.ItemInfo.Title.DisplayValue, 200),
+		PriceMinorUnits:   minor,
+		Currency:          currency,
+		Available:         strings.HasPrefix(strings.ToUpper(availability), "IN_STOCK"),
+		URL:               it.DetailPageURL,
+		Confidence:        confidence,
+	}, true
 }
 
 func (c *Connector) authorization() (string, error) {
@@ -349,11 +389,11 @@ func (c *Connector) authorization() (string, error) {
 	return header, nil
 }
 
-func firstError(body searchResponse) string {
-	if len(body.Errors) == 0 {
+func firstError(errs []apiError) string {
+	if len(errs) == 0 {
 		return ""
 	}
-	return ": " + sanitize.Text(body.Errors[0].Code+" "+body.Errors[0].Message, 200)
+	return ": " + sanitize.Text(errs[0].Code+" "+errs[0].Message, 200)
 }
 
 // toMinorUnits converts a Creators API money amount (major units, e.g.
@@ -374,8 +414,112 @@ func (c *Connector) Authenticate(context.Context, merchant.AuthRequest) (*mercha
 	return &merchant.AuthResult{Authenticated: c.configured()}, nil
 }
 
-func (c *Connector) GetProduct(context.Context, string) (*merchant.Product, error) {
-	return nil, fmt.Errorf("%w: Amazon getItems is not wired; search results carry what agents need", shared.ErrNotImplemented)
+// GetProduct looks up one ASIN via Creators API getItems — the same base
+// URL, auth and resource vocabulary as searchItems (Config.APIBase +
+// "/getItems"). NOT run against a live credential in this environment; the
+// request/response shape is extrapolated from searchItems' verified
+// lowerCamelCase convention and PA-API 5's GetItems (its documented
+// predecessor), not from a confirmed Creators API getItems example.
+func (c *Connector) GetProduct(ctx context.Context, merchantProductID string) (*merchant.Product, error) {
+	if !c.configured() {
+		return nil, fmt.Errorf("%w: %s", shared.ErrNotImplemented, c.configErr)
+	}
+	asin := strings.ToUpper(strings.TrimSpace(merchantProductID))
+	if !asinRE.MatchString(asin) {
+		return nil, fmt.Errorf("amazon: %q is not a valid ASIN", merchantProductID)
+	}
+	auth, err := c.authorization()
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"itemIds":     []string{asin},
+		"itemIdType":  "ASIN",
+		"partnerTag":  c.cfg.PartnerTag,
+		"marketplace": c.cfg.Marketplace,
+		"resources":   catalogResources,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("amazon: encoding getItems request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.APIBase+"/getItems", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("amazon: building getItems request: %w", err)
+	}
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("x-marketplace", c.cfg.Marketplace)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("amazon: getItems request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var body itemsResponse
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(&body)
+
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return nil, fmt.Errorf("amazon: Creators API rejected the credentials (HTTP %d)%s", resp.StatusCode, firstError(body.Errors))
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, errors.New("amazon: Creators API rate limit reached")
+	case resp.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("amazon: Creators API returned HTTP %d%s", resp.StatusCode, firstError(body.Errors))
+	case decodeErr != nil:
+		return nil, fmt.Errorf("amazon: decoding getItems response: %w", decodeErr)
+	}
+	if body.ItemsResult == nil || len(body.ItemsResult.Items) == 0 {
+		return nil, fmt.Errorf("%w: amazon %s%s", shared.ErrNotFound, asin, firstError(body.Errors))
+	}
+	p, ok := mapCatalogItem(body.ItemsResult.Items[0], 1.0)
+	if !ok {
+		return nil, fmt.Errorf("%w: amazon %s has no priced offer", shared.ErrNotFound, asin)
+	}
+	return &p, nil
+}
+
+// CartLine is one line of an Amazon Associates "Add to Cart" link.
+type CartLine struct {
+	ASIN     string
+	Quantity int
+}
+
+// CartURL builds Amazon's Associates "Add to Cart" link
+// (https://www.amazon.in/gp/aws/cart/add.html?AssociateTag=…&ASIN.1=…&Quantity.1=…),
+// officially documented alongside PA-API 5 as a plain HTML form action, not
+// a PA-API REST call — so it is not itself a PA-API operation and shouldn't
+// be affected by the PA-API 5 catalog-API retirement. The user opens the
+// link, reviews the prefilled Amazon cart, and pays on Amazon; Algebra never
+// sees payment details or places the order — same non-custodial shape as
+// HandoffURL, just prefilled. NOT confirmed against a live Amazon page in
+// this environment: verify it still loads a populated cart on the target
+// marketplace before relying on it (its documentation page now redirects
+// to the PA-API 5 deprecation notice, so current behavior is unconfirmed).
+func (c *Connector) CartURL(items []CartLine) (string, error) {
+	if !c.configured() {
+		return "", fmt.Errorf("%w: %s", shared.ErrNotImplemented, c.configErr)
+	}
+	if len(items) == 0 {
+		return "", errors.New("amazon: CartURL needs at least one item")
+	}
+	if len(items) > maxCartItems {
+		return "", fmt.Errorf("amazon: CartURL supports at most %d items, got %d", maxCartItems, len(items))
+	}
+	q := url.Values{"AssociateTag": {c.cfg.PartnerTag}}
+	for i, it := range items {
+		asin := strings.ToUpper(strings.TrimSpace(it.ASIN))
+		if !asinRE.MatchString(asin) {
+			return "", fmt.Errorf("amazon: %q is not a valid ASIN", it.ASIN)
+		}
+		if it.Quantity <= 0 {
+			return "", fmt.Errorf("amazon: quantity for %s must be positive, got %d", asin, it.Quantity)
+		}
+		idx := strconv.Itoa(i + 1)
+		q.Set("ASIN."+idx, asin)
+		q.Set("Quantity."+idx, strconv.Itoa(it.Quantity))
+	}
+	return "https://" + c.cfg.Marketplace + "/gp/aws/cart/add.html?" + q.Encode(), nil
 }
 
 func noCart() error {

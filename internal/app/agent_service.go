@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/project-algebra/algebra/internal/domain/agent"
+	"github.com/project-algebra/algebra/internal/domain/shared"
 )
 
 // AgentService creates and revokes AgentIdentity credentials. This is a
@@ -43,6 +44,17 @@ func (s *AgentService) CreateAgent(ctx context.Context, userID, clientID, name s
 	return raw, id, nil
 }
 
-func (s *AgentService) Revoke(ctx context.Context, agentID string) error {
+// Revoke revokes an AgentIdentity — userID must be the agent's own owner.
+// Without this check, a caller who merely knows (or guesses) an agent_id
+// could revoke any user's agent; see PaymentService.getOwned for the same
+// pattern applied to payment sources.
+func (s *AgentService) Revoke(ctx context.Context, userID, agentID string) error {
+	ag, err := s.store.Get(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if ag.UserID != userID {
+		return fmt.Errorf("%w: agent %s does not belong to user %s", shared.ErrUnauthorized, agentID, userID)
+	}
 	return s.store.Revoke(ctx, agentID, s.now())
 }

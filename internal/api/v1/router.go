@@ -17,6 +17,7 @@ import (
 
 	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/agent"
+	"github.com/project-algebra/algebra/internal/domain/integrator"
 	"github.com/project-algebra/algebra/internal/domain/shared"
 	"github.com/project-algebra/algebra/internal/platform/wiring"
 )
@@ -29,7 +30,8 @@ type API struct {
 // NewRouter builds the versioned REST API on Go's standard-library
 // ServeMux (method+path patterns, no external router dependency needed).
 // limiter may be nil (no Redis configured) — see rateLimitMiddleware.
-func NewRouter(b *wiring.Bundle, limiter app.RateLimiter) http.Handler {
+// allowedOrigins is the browser-frontend CORS allow-list — see corsMiddleware.
+func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []string) http.Handler {
 	api := &API{b: b, limiter: limiter}
 	mux := http.NewServeMux()
 
@@ -37,6 +39,10 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter) http.Handler {
 
 	mux.HandleFunc("POST /api/v1/agents", api.createAgent)
 	mux.HandleFunc("POST /api/v1/agents/{id}/revoke", api.revokeAgent)
+
+	mux.HandleFunc("POST /api/v1/integrators", api.createIntegrator)
+	mux.HandleFunc("POST /api/v1/integrators/{id}/revoke", api.revokeIntegrator)
+	mux.HandleFunc("POST /api/v1/policy/evaluate-transaction", api.evaluateTransaction)
 
 	mux.HandleFunc("POST /api/v1/intents", api.createIntent)
 	mux.HandleFunc("GET /api/v1/intents/{id}", api.getIntent)
@@ -73,7 +79,35 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter) http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	return api.rateLimitMiddleware(mux)
+	return corsMiddleware(allowedOrigins, api.rateLimitMiddleware(mux))
+}
+
+// corsMiddleware is the outermost layer: an OPTIONS preflight is answered
+// and returned before it ever reaches rate limiting or a handler, so a
+// browser's preflight traffic never consumes a caller's request budget.
+// allowedOrigins is matched exactly, never "*" — every origin-gated
+// endpoint here accepts Authorization/X-User-ID, and the CORS spec disallows
+// a wildcard origin alongside credentialed headers being meaningful anyway.
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && allowed[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID, Idempotency-Key")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // defaultRateLimit/defaultRateLimitWindow bound every caller (agent-token
@@ -188,6 +222,27 @@ func (a *API) resolveAgent(r *http.Request) (*agent.Identity, error) {
 		return nil, errors.New("agent token has been revoked")
 	}
 	return ag, nil
+}
+
+// resolveIntegrator is resolveAgent's counterpart for the standalone
+// policy-evaluation surface — a third-party integrator's bearer token,
+// checked the same way (hashed lookup + revocation), never an
+// agent/shopping-permission token used interchangeably with one.
+func (a *API) resolveIntegrator(r *http.Request) (*integrator.Integrator, error) {
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		return nil, errors.New("missing or malformed Authorization: Bearer <integrator_token> header")
+	}
+	token := authz[len(prefix):]
+	integ, err := a.b.Integrators.GetByTokenHash(r.Context(), agent.HashToken(token))
+	if err != nil {
+		return nil, errors.New("invalid integrator token")
+	}
+	if integ.IsRevoked() {
+		return nil, errors.New("integrator token has been revoked")
+	}
+	return integ, nil
 }
 
 // currentUserID is a DEV-MODE PLACEHOLDER for the human-only endpoints

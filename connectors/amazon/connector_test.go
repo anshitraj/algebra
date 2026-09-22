@@ -61,7 +61,7 @@ func newFakeAmazon(t *testing.T, wantScope string) *fakeAmazon {
 		_, _ = w.Write([]byte(`{"access_token":"amzn-token","token_type":"bearer","expires_in":3600}`))
 	}))
 	f.apiSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/catalog/v1/searchItems" {
+		if r.Method != http.MethodPost || (r.URL.Path != "/catalog/v1/searchItems" && r.URL.Path != "/catalog/v1/getItems") {
 			http.NotFound(w, r)
 			return
 		}
@@ -182,6 +182,91 @@ func TestSearchItems_Errors(t *testing.T) {
 	f.status, f.reply = http.StatusTooManyRequests, `{}`
 	if _, err := c.SearchProducts(context.Background(), "x", 5); err == nil || !strings.Contains(err.Error(), "rate limit") {
 		t.Fatalf("429: got %v", err)
+	}
+}
+
+const getItemsReply = `{"itemsResult":{"items":[
+ {"asin":"B0CHX1W1XY","detailPageURL":"https://www.amazon.in/dp/B0CHX1W1XY?tag=tag-21",
+  "itemInfo":{"title":{"displayValue":"Anker USB C Cable, 6ft"},"byLineInfo":{"brand":{"displayValue":"Anker"}}},
+  "offersV2":{"listings":[{"price":{"money":{"amount":1299.0,"currency":"INR"}},"availability":{"type":"IN_STOCK"}}]}}
+]}}`
+
+func TestGetProduct_ByASIN(t *testing.T) {
+	f := newFakeAmazon(t, "creatorsapi::default")
+	f.reply = getItemsReply
+	c := f.connector("3.2")
+
+	p, err := c.GetProduct(context.Background(), "b0chx1w1xy") // lowercase input, normalized
+	if err != nil {
+		t.Fatalf("GetProduct: %v", err)
+	}
+	if p.MerchantProductID != "B0CHX1W1XY" || p.PriceMinorUnits != 129900 || p.Currency != "INR" || p.Brand != "Anker" || !p.Available || p.Confidence != 1.0 {
+		t.Fatalf("product mapped wrong: %+v", p)
+	}
+	f.mu.Lock()
+	body := f.lastBody
+	f.mu.Unlock()
+	itemIDs, _ := body["itemIds"].([]any)
+	if body["itemIdType"] != "ASIN" || len(itemIDs) != 1 || itemIDs[0] != "B0CHX1W1XY" || body["partnerTag"] != "tag-21" {
+		t.Fatalf("getItems request body wrong: %v", body)
+	}
+}
+
+func TestGetProduct_InvalidASIN(t *testing.T) {
+	f := newFakeAmazon(t, "creatorsapi::default")
+	if _, err := f.connector("3.2").GetProduct(context.Background(), "not-an-asin"); err == nil || !strings.Contains(err.Error(), "not a valid ASIN") {
+		t.Fatalf("expected invalid-ASIN error, got %v", err)
+	}
+}
+
+func TestGetProduct_NotFound(t *testing.T) {
+	f := newFakeAmazon(t, "creatorsapi::default")
+	f.reply = `{"itemsResult":{"items":[]},"errors":[{"code":"InvalidParameterValue","message":"unknown ASIN"}]}`
+	_, err := f.connector("3.2").GetProduct(context.Background(), "B0000000XX")
+	if !errors.Is(err, shared.ErrNotFound) || !strings.Contains(err.Error(), "InvalidParameterValue") {
+		t.Fatalf("expected wrapped ErrNotFound, got %v", err)
+	}
+}
+
+func TestGetProduct_Unconfigured(t *testing.T) {
+	c := New(Config{})
+	if _, err := c.GetProduct(context.Background(), "B0CHX1W1XY"); !errors.Is(err, shared.ErrNotImplemented) {
+		t.Fatalf("expected ErrNotImplemented, got %v", err)
+	}
+}
+
+func TestCartURL(t *testing.T) {
+	f := newFakeAmazon(t, "creatorsapi::default")
+	c := f.connector("3.2")
+
+	link, err := c.CartURL([]CartLine{{ASIN: "b0chx1w1xy", Quantity: 2}, {ASIN: "B0TESTITEM", Quantity: 1}})
+	if err != nil {
+		t.Fatalf("CartURL: %v", err)
+	}
+	want := "https://www.amazon.in/gp/aws/cart/add.html?ASIN.1=B0CHX1W1XY&ASIN.2=B0TESTITEM&AssociateTag=tag-21&Quantity.1=2&Quantity.2=1"
+	if link != want {
+		t.Fatalf("CartURL = %q, want %q", link, want)
+	}
+	if err := merchant.NewAllowedDomains("amazon.in").ValidateURL(link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCartURL_Validation(t *testing.T) {
+	f := newFakeAmazon(t, "creatorsapi::default")
+	c := f.connector("3.2")
+
+	if _, err := c.CartURL(nil); err == nil {
+		t.Fatal("expected error for empty items")
+	}
+	if _, err := c.CartURL([]CartLine{{ASIN: "bad", Quantity: 1}}); err == nil || !strings.Contains(err.Error(), "not a valid ASIN") {
+		t.Fatalf("expected ASIN validation error, got %v", err)
+	}
+	if _, err := c.CartURL([]CartLine{{ASIN: "B0CHX1W1XY", Quantity: 0}}); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Fatalf("expected quantity validation error, got %v", err)
+	}
+	if _, err := New(Config{}).CartURL([]CartLine{{ASIN: "B0CHX1W1XY", Quantity: 1}}); !errors.Is(err, shared.ErrNotImplemented) {
+		t.Fatalf("expected ErrNotImplemented for unconfigured connector, got %v", err)
 	}
 }
 

@@ -9,8 +9,9 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/order"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
+	"github.com/project-algebra/algebra/internal/domain/websearch"
+	"github.com/project-algebra/algebra/policy"
 )
 
 // --- commerce.search_products / commerce.compare_products ---
@@ -39,6 +40,22 @@ func (srv *Server) registerCommerceTools(s *gomcp.Server) {
 			return nil, searchProductsOutput{}, err
 		}
 		return nil, searchProductsOutput{Results: results}, nil
+	})
+
+	gomcp.AddTool(s, &gomcp.Tool{
+		Name: "commerce.web_search",
+		Description: "Last-resort fallback when commerce.search_products finds nothing on any connected merchant: general web search (title/snippet/link only, backed by Google Custom Search). " +
+			"Never a priced product, never a cart, never an order — just links for the user to open. Returns not-implemented if no web-search fallback is configured.",
+	}, func(ctx context.Context, _ *gomcp.CallToolRequest, in searchProductsInput) (*gomcp.CallToolResult, webSearchOutput, error) {
+		ag, err := srv.resolveAgent(ctx, in.AgentToken)
+		if err != nil {
+			return nil, webSearchOutput{}, err
+		}
+		results, err := srv.Discovery.SearchWeb(ctx, ag.ID, in.Query, in.Limit)
+		if err != nil {
+			return nil, webSearchOutput{}, err
+		}
+		return nil, webSearchOutput{Results: results}, nil
 	})
 
 	gomcp.AddTool(s, &gomcp.Tool{
@@ -334,6 +351,10 @@ type orderOutput struct {
 
 type merchantsOutput struct {
 	Merchants []app.MerchantInfo `json:"merchants"`
+}
+
+type webSearchOutput struct {
+	Results []websearch.Result `json:"results"`
 }
 
 type executeOutput struct {
