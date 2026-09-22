@@ -39,7 +39,12 @@ func (a *API) createAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) revokeAgent(w http.ResponseWriter, r *http.Request) {
-	if err := a.b.AgentSvc.Revoke(r.Context(), r.PathValue("id")); err != nil {
+	userID, err := currentUserID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := a.b.AgentSvc.Revoke(r.Context(), userID, r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
 	}

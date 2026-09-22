@@ -98,9 +98,11 @@ Meanwhile agents get a handoff link to Zepto's search page. (The `dev.ucp.shoppi
 
 Uses the **Creators API**, which replaced Product Advertising API 5.0 (retired May 2026): `POST https://creatorsapi.amazon/catalog/v1/searchItems` with `x-marketplace: www.amazon.in`, an OAuth2 client-credentials token, and `Authorization: Bearer <token>` (plus `, Version 2.x` for legacy Cognito credentials). India belongs to the Europe/Middle East/India credential group: version **3.2** (`api.amazon.co.uk`) or **2.2** (Cognito `eu-south-2`).
 
-- Search only. Amazon offers Associates no cart or order API; buying happens on Amazon through the detail-page link.
+- Search only for cart/checkout. Amazon offers Associates no cart or order API; buying happens on Amazon through the detail-page link (`HandoffURL`/`Product.URL`) or the prefilled cart link (`CartURL`, below).
 - Results are fetched live, never cached (Associates policy limits showing stale prices).
 - Not yet proven against a live credential: the resource names `itemInfo.byLineInfo` and `offersV2.listings.availability` are the camelCase forms of PA-API 5 resources, and the v3 token endpoint's client-auth style is auto-detected. If Amazon rejects either, search fails with the API's own error — never silently.
+- **`GetProduct(asin)`** calls `getItems` on the same base URL, auth and resource vocabulary as `searchItems`. Its exact request/response envelope (`itemIds`/`itemIdType`, `itemsResult.items`) is extrapolated from `searchItems`' verified lowerCamelCase convention and PA-API 5's documented `GetItems`, not from a confirmed live Creators API example — same "tested against a fake server, not live" tier as the rest of this connector. Nothing calls it yet (no caller wired).
+- **`CartURL(items)`** builds Amazon's Associates "Add to Cart" link (`https://www.amazon.in/gp/aws/cart/add.html?AssociateTag=…&ASIN.1=…&Quantity.1=…`, up to 10 lines) — a plain HTML form action, not a PA-API REST call, so it predates and should be unaffected by the PA-API 5 retirement. It is a pure URL builder: no network call, same non-custodial shape as `HandoffURL`, just prefilled with items so the user has one link to review and pay on Amazon. **Not confirmed against a live Amazon page** — its old documentation page now redirects to the PA-API 5 deprecation notice, so verify it still loads a populated cart before depending on it. Not wired into any REST/MCP response yet.
 
 ## Flipkart (`connectors/flipkart`)
 
@@ -114,6 +116,26 @@ Uses the **Affiliate API**: `GET https://affiliate-api.flipkart.net/affiliate/1.
 ## Blinkit (`connectors/blinkit`)
 
 Blinkit publishes no public API, partner catalog API, affiliate API, or MCP server. The community "Blinkit MCP" projects work by driving blinkit.com's consumer site with a headless browser and replaying private endpoints behind Cloudflare/anti-bot protection — mandate §10 forbids exactly that, so none are used or ported. The connector only returns a link to Blinkit's own search page; every capability is false and checkout returns `USER_INTERVENTION_REQUIRED`.
+
+## General web-search fallback (`connectors/websearch`, not a merchant)
+
+`commerce.web_search` (MCP only, like `commerce.search_products`) is the
+last resort when no connected merchant connector finds the product: a
+general web search via Google's official Custom Search JSON API. It is
+deliberately **not** a `merchant.Connector` — it isn't registered in
+`ConnectorRegistry` and never appears in `GET /api/v1/merchants` — because
+its results are arbitrary public pages, not a priced item from a storefront
+Algebra has an integration with. No price, no cart, no checkout, no order;
+just a title/snippet/link for the user to open. Off (`ErrNotImplemented`)
+unless `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_ENGINE_ID` are set (a
+Google Cloud API key and a Programmable Search Engine ID configured to
+search the whole web, from https://programmablesearchengine.google.com/).
+
+Every result link is checked against
+`merchant.ValidatePublicHTTPSURL` (https-only, no loopback/private/
+link-local address) before it reaches an agent — the same SSRF guard every
+merchant product URL gets, minus the domain allowlist, since a general
+web-search result can legitimately point at any public domain.
 
 ## Generic browser connector
 

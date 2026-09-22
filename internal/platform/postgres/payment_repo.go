@@ -71,6 +71,15 @@ func (r *PaymentSourceRepo) GetByAlias(ctx context.Context, userID, alias string
 	return scanPaymentSourceRow(row)
 }
 
+// GetByID looks up a payment source by its raw ID regardless of owner — the
+// caller (PaymentService.getOwned) is responsible for the ownership check;
+// see its doc comment for why that's done in the service layer rather than
+// folded into this query.
+func (r *PaymentSourceRepo) GetByID(ctx context.Context, id string) (*payment.PaymentSource, error) {
+	row := r.db.Pool.QueryRow(ctx, paymentSourceSelectSQL+` WHERE id = $1`, id)
+	return scanPaymentSourceRow(row)
+}
+
 func (r *PaymentSourceRepo) Revoke(ctx context.Context, id string, revokedAt time.Time) error {
 	tag, err := r.db.Pool.Exec(ctx, `UPDATE payment_sources SET revoked_at = $2 WHERE id = $1`, id, revokedAt)
 	if err != nil {

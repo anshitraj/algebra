@@ -14,10 +14,11 @@ type paymentSourceView struct {
 	Last4        string               `json:"last4,omitempty"`
 	Nickname     string               `json:"nickname,omitempty"`
 	Capabilities payment.Capabilities `json:"capabilities"`
+	Revoked      bool                 `json:"revoked"`
 }
 
 func toPaymentSourceView(s payment.PaymentSource) paymentSourceView {
-	return paymentSourceView{ID: s.ID, Alias: s.Alias, Type: string(s.Type), Network: s.Network, Last4: s.Last4, Nickname: s.Nickname, Capabilities: s.Capabilities}
+	return paymentSourceView{ID: s.ID, Alias: s.Alias, Type: string(s.Type), Network: s.Network, Last4: s.Last4, Nickname: s.Nickname, Capabilities: s.Capabilities, Revoked: s.IsRevoked()}
 }
 
 func (a *API) listPaymentSources(w http.ResponseWriter, r *http.Request) {
@@ -70,11 +71,12 @@ func (a *API) addPaymentSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) revokePaymentSource(w http.ResponseWriter, r *http.Request) {
-	if _, err := currentUserID(r); err != nil {
+	userID, err := currentUserID(r)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := a.b.Payments.RevokeSource(r.Context(), r.PathValue("id")); err != nil {
+	if err := a.b.Payments.RevokeSource(r.Context(), userID, r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
 	}

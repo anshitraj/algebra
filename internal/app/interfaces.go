@@ -14,14 +14,16 @@ import (
 
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/approval"
+	"github.com/project-algebra/algebra/internal/domain/integrator"
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/order"
 	"github.com/project-algebra/algebra/internal/domain/payment"
-	"github.com/project-algebra/algebra/internal/domain/policy"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
 	"github.com/project-algebra/algebra/internal/domain/shared"
+	"github.com/project-algebra/algebra/internal/domain/websearch"
+	"github.com/project-algebra/algebra/policy"
 )
 
 type IntentStore interface {
@@ -34,6 +36,16 @@ type AgentStore interface {
 	GetByTokenHash(ctx context.Context, hash string) (*agent.Identity, error)
 	Get(ctx context.Context, id string) (*agent.Identity, error)
 	Create(ctx context.Context, a *agent.Identity) error
+	Revoke(ctx context.Context, id string, revokedAt time.Time) error
+}
+
+// IntegratorStore backs IntegratorService/TransactionPolicyService — see
+// internal/domain/integrator's package doc for what an Integrator is and
+// how it differs from an AgentStore-backed AI shopping agent.
+type IntegratorStore interface {
+	GetByTokenHash(ctx context.Context, hash string) (*integrator.Integrator, error)
+	Get(ctx context.Context, id string) (*integrator.Integrator, error)
+	Create(ctx context.Context, i *integrator.Integrator) error
 	Revoke(ctx context.Context, id string, revokedAt time.Time) error
 }
 
@@ -63,6 +75,7 @@ type ApprovalStore interface {
 
 type PaymentSourceStore interface {
 	List(ctx context.Context, userID string) ([]payment.PaymentSource, error)
+	GetByID(ctx context.Context, id string) (*payment.PaymentSource, error)
 	GetByAlias(ctx context.Context, userID, alias string) (*payment.PaymentSource, error)
 	Create(ctx context.Context, s *payment.PaymentSource) error
 	Revoke(ctx context.Context, id string, revokedAt time.Time) error
@@ -121,6 +134,14 @@ type PrivacyResolver interface {
 // production deployment (see docs/LOCAL_DEVELOPMENT.md).
 type RateLimiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (allowed bool, retryAfter time.Duration, err error)
+}
+
+// WebSearcher is an optional general web-search fallback (see
+// connectors/websearch), used only when no merchant connector can find a
+// product. It is not a merchant: no price, no cart, no order — just links.
+// A nil WebSearcher (the default) means the capability is off.
+type WebSearcher interface {
+	Search(ctx context.Context, query string, limit int) ([]websearch.Result, error)
 }
 
 // ConnectorRegistry holds every configured MerchantConnector by name. It is

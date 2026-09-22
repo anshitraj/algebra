@@ -22,7 +22,7 @@ flowchart TD
     end
     APP --> PG[(PostgreSQL — authoritative state)]
     APP --> RD[(Redis — cache / locks / idempotency)]
-    POL --> PP[PolicyProvider: Local rule engine / OmniClaw]
+    POL --> PP[PolicyProvider: Local deterministic rule engine]
     PAY --> VP[CardVaultProvider: Sandbox / Spreedly]
     APP --> PR[PrivacyResolver: encrypted profiles]
     DISC --> MC[MerchantConnector: Mock / Swiggy Instamart MCP / Zepto MCP / Amazon Creators API / Flipkart Affiliate API / Blinkit handoff]

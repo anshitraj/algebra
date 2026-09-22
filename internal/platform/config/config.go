@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -30,9 +32,6 @@ type Config struct {
 	// HTTPAddr is the REST API listen address, e.g. ":8080".
 	HTTPAddr string
 
-	OmniClawServerURL string
-	OmniClawToken     string
-
 	ApprovalTTL                    time.Duration
 	QuoteTTL                       time.Duration
 	QuoteAmountToleranceMinorUnits int64
@@ -42,7 +41,19 @@ type Config struct {
 	// §47/§49). Defaults to the merchants this build ships connectors for.
 	MerchantURLAllowlist []string
 
+	// CORSAllowedOrigins is the exact-match allow-list for browser-frontend
+	// requests (web/, the Next.js console) — see internal/api/v1's
+	// corsMiddleware. Defaults to the Next.js dev server's own default port.
+	CORSAllowedOrigins []string
+
 	Merchants MerchantsConfig
+
+	// GoogleSearchAPIKey/GoogleSearchEngineID configure the optional general
+	// web-search fallback (connectors/websearch) used only when no
+	// connected merchant can find a product. Both empty (the default) means
+	// the capability is off — commerce.web_search returns ErrNotImplemented.
+	GoogleSearchAPIKey   string
+	GoogleSearchEngineID string
 }
 
 // DefaultEnabledMerchants is every connector registered unless
@@ -120,13 +131,20 @@ func (m MerchantsConfig) WithDefaults() MerchantsConfig {
 // a missing DATABASE_URL should fail fast, not fall back to something that
 // looks like it's working.
 func FromEnv() (*Config, error) {
+	// Load .env into the process environment for local development — see
+	// .env.example. godotenv.Load only fills variables not already set, so
+	// a real deployment's actual environment (Secret Manager, Cloud Run
+	// env vars, ...) always wins over a stray .env file, and a missing
+	// .env (every non-local environment) is silently fine: godotenv.Load's
+	// error is deliberately ignored, not logged, since "no .env file" is
+	// the expected, correct state outside local dev.
+	_ = godotenv.Load()
+
 	cfg := &Config{
-		DatabaseURL:       getEnv("DATABASE_URL", "postgres://algebra:algebra@localhost:5432/algebra?sslmode=disable"),
-		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
-		MasterKeyBase64:   os.Getenv("ALGEBRA_MASTER_KEY"),
-		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
-		OmniClawServerURL: os.Getenv("OMNICLAW_SERVER_URL"),
-		OmniClawToken:     os.Getenv("OMNICLAW_TOKEN"),
+		DatabaseURL:     getEnv("DATABASE_URL", "postgres://algebra:algebra@localhost:5432/algebra?sslmode=disable"),
+		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
+		MasterKeyBase64: os.Getenv("ALGEBRA_MASTER_KEY"),
+		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
 	}
 
 	approvalTTL, err := getDuration("APPROVAL_TTL", 15*time.Minute)
@@ -149,6 +167,11 @@ func FromEnv() (*Config, error) {
 
 	cfg.MerchantURLAllowlist = splitCSV(getEnv("MERCHANT_URL_ALLOWLIST",
 		"zepto.co.in,zeptonow.com,swiggy.com,amazon.in,flipkart.com,blinkit.com"))
+
+	cfg.CORSAllowedOrigins = splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
+
+	cfg.GoogleSearchAPIKey = os.Getenv("GOOGLE_SEARCH_API_KEY")
+	cfg.GoogleSearchEngineID = os.Getenv("GOOGLE_SEARCH_ENGINE_ID")
 
 	connectorTimeout, err := getDuration("CONNECTOR_TIMEOUT", defaultConnectorTimeout)
 	if err != nil {

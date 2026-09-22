@@ -36,7 +36,7 @@ func main() {
 	}
 	defer bundle.DB.Close()
 
-	handler := v1.NewRouter(bundle, bundle.Limiter)
+	handler := v1.NewRouter(bundle, bundle.Limiter, cfg.CORSAllowedOrigins)
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,

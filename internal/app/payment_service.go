@@ -73,10 +73,30 @@ func (s *PaymentService) AddCard(ctx context.Context, req payment.TokenizeReques
 }
 
 // RevokeSource is a user action that both revokes the source locally and
-// asks the vault provider to invalidate its token.
-func (s *PaymentService) RevokeSource(ctx context.Context, sourceID string) error {
+// asks the vault provider to invalidate its token. userID must be the
+// source's own owner — see getOwned.
+func (s *PaymentService) RevokeSource(ctx context.Context, userID, sourceID string) error {
+	if _, err := s.getOwned(ctx, userID, sourceID); err != nil {
+		return err
+	}
 	if err := s.vault.RevokeSource(ctx, sourceID); err != nil {
 		return fmt.Errorf("app: revoking source at vault: %w", err)
 	}
 	return s.sources.Revoke(ctx, sourceID, s.now())
+}
+
+// getOwned loads a payment source and verifies it belongs to userID — same
+// load-then-compare idiom as ApprovalService.getOwned. Without this, the
+// X-User-ID header (a caller-asserted, non-cryptographic identifier — see
+// currentUserID's doc comment in internal/api/v1/router.go) would let any
+// caller revoke any other user's payment source by guessing its ID.
+func (s *PaymentService) getOwned(ctx context.Context, userID, sourceID string) (*payment.PaymentSource, error) {
+	src, err := s.sources.GetByID(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if src.UserID != userID {
+		return nil, fmt.Errorf("%w: payment source %s does not belong to user %s", shared.ErrUnauthorized, sourceID, userID)
+	}
+	return src, nil
 }

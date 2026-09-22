@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -37,7 +38,23 @@ func TestSensitiveValuesNeverAppearInLogOutput(t *testing.T) {
 		logger.Info("test event", slog.String(c.key, c.value))
 
 		output := buf.String()
-		if strings.Contains(output, c.value) {
+		// The leak check excludes the "time" field: slog.JSONHandler stamps
+		// the real wall-clock time on every line, and a short numeric test
+		// value (e.g. cvv "123") can coincidentally appear inside its
+		// nanosecond digits — a false positive with nothing to do with
+		// redaction. Every other field (level, msg, and the attribute under
+		// test) is still checked, so an actual leak anywhere else is still
+		// caught.
+		var parsed map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &parsed); err != nil {
+			t.Fatalf("key %q: log output is not valid JSON: %v (%s)", c.key, err, output)
+		}
+		delete(parsed, "time")
+		withoutTime, err := json.Marshal(parsed)
+		if err != nil {
+			t.Fatalf("key %q: re-encoding log output: %v", c.key, err)
+		}
+		if strings.Contains(string(withoutTime), c.value) {
 			t.Errorf("key %q: sensitive value %q leaked into log output: %s", c.key, c.value, output)
 		}
 		if !strings.Contains(output, redacted) {

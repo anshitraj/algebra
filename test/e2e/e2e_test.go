@@ -12,15 +12,17 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/intent"
-	"github.com/project-algebra/algebra/internal/domain/policy"
+	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/platform/config"
 	"github.com/project-algebra/algebra/internal/platform/wiring"
+	"github.com/project-algebra/algebra/policy"
 )
 
 func requireBundle(t *testing.T) *wiring.Bundle {
@@ -54,6 +56,23 @@ func mustBootstrapUserAndAgent(t *testing.T, b *wiring.Bundle) (userID, agentID 
 	return user.ID, identity.ID
 }
 
+// mustSeedShipping stores a real (encrypted) shipping address under the
+// "shipping:home" alias every test intent below uses. Without this,
+// OrderService.resolveFulfillment has nothing to resolve and the mock
+// connector correctly refuses to check out an undeliverable order — see
+// docs/PRIVACY.md: the merchant call is the only place a resolved address
+// exists, and it only exists if a profile was ever stored for the alias.
+func mustSeedShipping(t *testing.T, b *wiring.Bundle, userID string) {
+	t.Helper()
+	profile := privacy.ShippingProfile{
+		RecipientName: "E2E Test User", Line1: "1 Test St", City: "Bengaluru",
+		State: "KA", PostalCode: "560001", Country: "IN", Phone: "+910000000000",
+	}
+	if err := b.Privacy.StoreShipping(context.Background(), "profile_"+uuid.NewString(), userID, "shipping:home", profile, time.Now()); err != nil {
+		t.Fatalf("seeding shipping profile: %v", err)
+	}
+}
+
 // TestFullFlow_AutoApprovedUnderThreshold covers the mandate's MVP example
 // almost verbatim: order groceries under a policy-set threshold, with no
 // human click required, end to end through a real (mock) merchant.
@@ -61,6 +80,7 @@ func TestFullFlow_AutoApprovedUnderThreshold(t *testing.T) {
 	b := requireBundle(t)
 	ctx := context.Background()
 	userID, agentID := mustBootstrapUserAndAgent(t, b)
+	mustSeedShipping(t, b, userID)
 
 	pi, err := b.Intents.CreateIntent(ctx, b.Idempotency, "", app.CreateIntentInput{
 		UserID: userID, AgentID: agentID,
@@ -150,6 +170,7 @@ func TestFullFlow_RequiresHumanApproval(t *testing.T) {
 	b := requireBundle(t)
 	ctx := context.Background()
 	userID, agentID := mustBootstrapUserAndAgent(t, b)
+	mustSeedShipping(t, b, userID)
 
 	// 2x of everything non-gift-card in the mock catalog comfortably clears
 	// the ₹1,000 approval threshold while staying under the ₹2,000
