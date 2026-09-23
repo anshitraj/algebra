@@ -25,8 +25,6 @@ const displayName: Record<string, string> = {
   blinkit: "Blinkit",
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
-
 export function Merchants() {
   const [merchants, setMerchants] = useState<MerchantStatus[]>(FALLBACK);
   const [live, setLive] = useState(false);
@@ -34,7 +32,8 @@ export function Merchants() {
   useEffect(() => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2500);
-    fetch(`${API_URL}/api/v1/merchants`, { signal: controller.signal })
+    // Same-origin: /api/v1 is proxied to the Go API (next.config.ts).
+    fetch("/api/v1/merchants", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then((data: MerchantStatus[]) => {
         const named = data.filter((m) => m.name in displayName);

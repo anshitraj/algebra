@@ -9,6 +9,7 @@ package v1
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -17,14 +18,17 @@ import (
 
 	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/agent"
+	"github.com/project-algebra/algebra/internal/domain/billing"
 	"github.com/project-algebra/algebra/internal/domain/integrator"
 	"github.com/project-algebra/algebra/internal/domain/shared"
+	"github.com/project-algebra/algebra/internal/domain/tenant"
 	"github.com/project-algebra/algebra/internal/platform/wiring"
 )
 
 type API struct {
-	b       *wiring.Bundle
-	limiter app.RateLimiter // optional — see app.RateLimiter's doc comment
+	b              *wiring.Bundle
+	limiter        app.RateLimiter // optional — see app.RateLimiter's doc comment
+	allowedOrigins map[string]bool
 }
 
 // NewRouter builds the versioned REST API on Go's standard-library
@@ -32,8 +36,45 @@ type API struct {
 // limiter may be nil (no Redis configured) — see rateLimitMiddleware.
 // allowedOrigins is the browser-frontend CORS allow-list — see corsMiddleware.
 func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []string) http.Handler {
-	api := &API{b: b, limiter: limiter}
+	origins := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		origins[o] = true
+	}
+	api := &API{b: b, limiter: limiter, allowedOrigins: origins}
 	mux := http.NewServeMux()
+
+	// --- human accounts (first-party web app) ---
+	mux.HandleFunc("GET /api/v1/auth/providers", api.authProviders)
+	mux.HandleFunc("GET /api/v1/auth/session", api.getSession)
+	mux.HandleFunc("POST /api/v1/auth/signup", api.signUp)
+	mux.HandleFunc("POST /api/v1/auth/login", api.signIn)
+	mux.HandleFunc("POST /api/v1/auth/logout", api.signOut)
+	mux.HandleFunc("POST /api/v1/auth/password/forgot", api.forgotPassword)
+	mux.HandleFunc("POST /api/v1/auth/password/reset", api.resetPassword)
+	mux.HandleFunc("POST /api/v1/auth/agent-token", api.agentToken)
+	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}", api.oauthStart)
+	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/callback", api.oauthCallback)
+
+	mux.HandleFunc("GET /api/v1/me", api.getMe)
+	mux.HandleFunc("PATCH /api/v1/me", api.updateMe)
+	mux.HandleFunc("GET /api/v1/me/sessions", api.listMySessions)
+	mux.HandleFunc("POST /api/v1/me/sessions/{id}/revoke", api.revokeMySession)
+	mux.HandleFunc("GET /api/v1/me/guardrails", api.getMyGuardrails)
+	mux.HandleFunc("PUT /api/v1/me/guardrails", api.setMyGuardrails)
+	mux.HandleFunc("POST /api/v1/me/onboarding", api.completeOnboarding)
+	mux.HandleFunc("GET /api/v1/me/overview", api.getMyOverview)
+	mux.HandleFunc("GET /api/v1/me/intents", api.listMyIntents)
+	mux.HandleFunc("GET /api/v1/me/approvals", api.listMyApprovals)
+	mux.HandleFunc("GET /api/v1/me/orders", api.listMyOrders)
+
+	mux.HandleFunc("GET /api/v1/billing", api.getBilling)
+	mux.HandleFunc("POST /api/v1/billing/checkout", api.startCheckout)
+	mux.HandleFunc("POST /api/v1/billing/confirm", api.confirmCheckout)
+	mux.HandleFunc("POST /api/v1/billing/cancel", api.cancelSubscription)
+	mux.HandleFunc("POST /api/v1/billing/webhooks/razorpay", api.razorpayWebhook)
+
+	mux.HandleFunc("GET /api/v1/search", api.searchProducts)
+	mux.HandleFunc("GET /api/v1/web-search", api.webSearch)
 
 	mux.HandleFunc("POST /api/v1/users", api.createUser)
 
@@ -43,6 +84,22 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 	mux.HandleFunc("POST /api/v1/integrators", api.createIntegrator)
 	mux.HandleFunc("POST /api/v1/integrators/{id}/revoke", api.revokeIntegrator)
 	mux.HandleFunc("POST /api/v1/policy/evaluate-transaction", api.evaluateTransaction)
+
+	mux.HandleFunc("POST /api/v1/tenants", api.createTenant)
+	mux.HandleFunc("POST /api/v1/tenants/{id}/revoke", api.revokeTenant)
+	mux.HandleFunc("POST /api/v1/tenants/{id}/policy-sets", api.setPolicySet)
+	mux.HandleFunc("GET /api/v1/tenants/{id}/policy-sets/latest", api.getLatestPolicySet)
+	mux.HandleFunc("POST /api/v1/tenants/{id}/webhook-endpoints", api.createWebhookEndpoint)
+
+	mux.HandleFunc("POST /api/v1/payment-intents", api.createPaymentIntent)
+	mux.HandleFunc("GET /api/v1/payment-intents/{id}", api.getPaymentIntent)
+	mux.HandleFunc("GET /api/v1/payment-intents/{id}/status", api.getPaymentIntent)
+	mux.HandleFunc("GET /api/v1/payment-intents/{id}/audit", api.getPaymentIntentAuditTrail)
+	mux.HandleFunc("POST /api/v1/payment-intents/{id}/approve", api.approvePaymentIntent)
+	mux.HandleFunc("POST /api/v1/payment-intents/{id}/reject", api.rejectPaymentIntent)
+	mux.HandleFunc("POST /api/v1/payment-intents/{id}/execute", api.executePaymentIntent)
+	mux.HandleFunc("POST /api/v1/payment-intents/{id}/revoke", api.revokePaymentIntent)
+	mux.HandleFunc("GET /api/v1/transactions", api.listTransactions)
 
 	mux.HandleFunc("POST /api/v1/intents", api.createIntent)
 	mux.HandleFunc("GET /api/v1/intents/{id}", api.getIntent)
@@ -75,11 +132,16 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 	mux.HandleFunc("POST /api/v1/profiles/billing", api.createBillingProfile)
 	mux.HandleFunc("GET /api/v1/profiles/shipping", api.listShippingAliases)
 
+	mux.HandleFunc("GET /api/v1/commerce-profile", api.getCommerceProfile)
+	mux.HandleFunc("PUT /api/v1/commerce-profile/preferences/{category}", api.setCommerceProfilePreferences)
+	mux.HandleFunc("PUT /api/v1/commerce-profile/defaults", api.setCommerceProfileDefaults)
+
 	mux.HandleFunc("POST /api/v1/webhooks/{provider}", api.receiveWebhook)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /readyz", api.readyz)
 
-	return corsMiddleware(allowedOrigins, api.rateLimitMiddleware(mux))
+	return requestLog(slog.Default(), securityHeaders(corsMiddleware(allowedOrigins, api.rateLimitMiddleware(api.csrfGuard(api.withSession(mux))))))
 }
 
 // corsMiddleware is the outermost layer: an OPTIONS preflight is answered
@@ -98,7 +160,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		if origin != "" && allowed[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID, Idempotency-Key")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
@@ -133,6 +195,14 @@ func (a *API) rateLimitMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if isAuthAbuseTarget(r) {
+			ok, retry, err := a.limiter.Allow(r.Context(), "ratelimit:auth:"+clientMeta(r).IP, authRateLimit, authRateLimitWindow)
+			if err == nil && !ok {
+				w.Header().Set("Retry-After", formatSeconds(retry))
+				writeJSON(w, http.StatusTooManyRequests, errorBody{Error: "too many attempts — wait a minute and try again"})
+				return
+			}
+		}
 		allowed, retryAfter, err := a.limiter.Allow(r.Context(), "ratelimit:"+rateLimitKey(r), defaultRateLimit, defaultRateLimitWindow)
 		if err != nil {
 			next.ServeHTTP(w, r)
@@ -148,12 +218,15 @@ func (a *API) rateLimitMiddleware(next http.Handler) http.Handler {
 }
 
 // rateLimitKey identifies the caller: the agent token's hash when present
-// (never the raw token — this becomes part of a Redis key), otherwise the
-// remote IP for unauthenticated endpoints (POST /users, POST /agents,
-// GET /merchants).
+// (never the raw token — this becomes part of a Redis key), then the
+// session cookie's hash, otherwise the remote IP for unauthenticated
+// endpoints (sign-in, sign-up, GET /merchants).
 func rateLimitKey(r *http.Request) string {
 	if authz := r.Header.Get("Authorization"); strings.HasPrefix(authz, "Bearer ") {
 		return "agent:" + agent.HashToken(strings.TrimPrefix(authz, "Bearer "))
+	}
+	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+		return "session:" + agent.HashToken(c.Value)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
@@ -186,7 +259,12 @@ type errorBody struct {
 // single choke point where that would be caught/fixed if one ever did.
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
+	var authErr unauthenticatedError
 	switch {
+	case errors.As(err, &authErr):
+		status = http.StatusUnauthorized
+	case errors.Is(err, billing.ErrQuotaExceeded):
+		status = http.StatusPaymentRequired
 	case errors.Is(err, shared.ErrNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, shared.ErrUnauthorized):
@@ -207,22 +285,42 @@ func decodeJSON(r *http.Request, v any) error {
 // resolveAgent extracts and validates the bearer agent token from the
 // Authorization header — the same token mechanism internal/mcpserver uses,
 // so an agent's identity means the same thing on both transports.
+//
+// With no Authorization header, a signed-in browser session acts through
+// that session's own console agent (same permission set, revoked together
+// with the session) — so the web app never has to hold an agent token in
+// JavaScript.
 func (a *API) resolveAgent(r *http.Request) (*agent.Identity, error) {
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
+	if authz == "" {
+		if sess := sessionFromContext(r.Context()); sess != nil && sess.AgentID != "" {
+			ag, err := a.b.Agents.Get(r.Context(), sess.AgentID)
+			if err != nil || ag.IsRevoked() {
+				return nil, unauthenticatedError{"session agent is no longer valid — sign in again"}
+			}
+			return ag, nil
+		}
+		return nil, unauthenticatedError{"sign in, or send Authorization: Bearer <agent_token>"}
+	}
 	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		return nil, errors.New("missing or malformed Authorization: Bearer <agent_token> header")
+		return nil, unauthenticatedError{"malformed Authorization header — expected Bearer <agent_token>"}
 	}
 	token := authz[len(prefix):]
 	ag, err := a.b.Agents.GetByTokenHash(r.Context(), agent.HashToken(token))
 	if err != nil {
-		return nil, errors.New("invalid agent token")
+		return nil, unauthenticatedError{"invalid agent token"}
 	}
 	if ag.IsRevoked() {
-		return nil, errors.New("agent token has been revoked")
+		return nil, unauthenticatedError{"agent token has been revoked"}
 	}
 	return ag, nil
 }
+
+// unauthenticatedError maps to 401 in writeError.
+type unauthenticatedError struct{ msg string }
+
+func (e unauthenticatedError) Error() string { return e.msg }
 
 // resolveIntegrator is resolveAgent's counterpart for the standalone
 // policy-evaluation surface — a third-party integrator's bearer token,
@@ -245,18 +343,43 @@ func (a *API) resolveIntegrator(r *http.Request) (*integrator.Integrator, error)
 	return integ, nil
 }
 
-// currentUserID is a DEV-MODE PLACEHOLDER for the human-only endpoints
-// (approvals, payment sources, privacy profiles). Production requires a
-// real authenticated user session (OIDC/OAuth, mandate §46) — that needs an
-// identity provider's client credentials, which do not exist in this
-// environment. Until that's wired up, the caller asserts their own user ID
-// via this header; this is explicitly NOT a security boundary and must
-// never be treated as one outside local development. See
-// docs/LOCAL_DEVELOPMENT.md.
-func currentUserID(r *http.Request) (string, error) {
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		return "", errors.New("missing X-User-ID header (dev-mode user identification; see docs/LOCAL_DEVELOPMENT.md)")
+// resolveTenant is resolveAgent's counterpart for tenant-admin operations
+// (setting policy, registering webhook endpoints, listing transactions) — a
+// business's own bearer token, checked the same way, never interchangeable
+// with an agent or integrator token.
+func (a *API) resolveTenant(r *http.Request) (*tenant.Tenant, error) {
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		return nil, errors.New("missing or malformed Authorization: Bearer <tenant_token> header")
 	}
-	return userID, nil
+	token := authz[len(prefix):]
+	t, err := a.b.Tenants.GetByTokenHash(r.Context(), agent.HashToken(token))
+	if err != nil {
+		return nil, errors.New("invalid tenant token")
+	}
+	if t.IsRevoked() {
+		return nil, errors.New("tenant token has been revoked")
+	}
+	return t, nil
+}
+
+// currentUserID identifies the human for human-only endpoints (approvals,
+// payment sources, addresses, revoking agents). It accepts ONLY a signed-in
+// session — never an agent bearer token, which is what keeps "approve this
+// spend" out of any agent's reach, including the web app's own LLM loop.
+//
+// ALGEBRA_DEV_AUTH=true additionally accepts a caller-asserted X-User-ID
+// header, for local scripts written before accounts existed. That is not a
+// security boundary and must never be enabled on a reachable host.
+func (a *API) currentUserID(r *http.Request) (string, error) {
+	if userID, ok := a.sessionUserID(r); ok {
+		return userID, nil
+	}
+	if a.b.AuthConfig.DevHeaderAuth {
+		if userID := r.Header.Get("X-User-ID"); userID != "" {
+			return userID, nil
+		}
+	}
+	return "", unauthenticatedError{"sign in required"}
 }

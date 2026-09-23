@@ -34,7 +34,20 @@ type OrderService struct {
 	toleranceMU int64
 	locker      Locker          // optional — see Locker's doc comment in interfaces.go
 	privacy     PrivacyResolver // optional — see resolveFulfillment
+	userRules   UserRulesSource // optional — see PolicyService.SetUserRules
+	gate        ExecutionGate   // optional — plan limits, see SetExecutionGate
 }
+
+// ExecutionGate decides whether a user's plan allows one more order this
+// month. BillingService implements it.
+type ExecutionGate interface {
+	CheckExecution(ctx context.Context, userID string) error
+}
+
+// SetExecutionGate enforces plan limits before any order is placed. Checked
+// before the approval is claimed, so hitting the limit leaves the intent
+// APPROVED and executable after an upgrade.
+func (s *OrderService) SetExecutionGate(g ExecutionGate) { s.gate = g }
 
 func NewOrderService(intents IntentStore, agents AgentStore, approvals ApprovalStore, orders OrderStore, quoteSvc *QuoteService, connectors *ConnectorRegistry, provider policy.Provider, ledger SpendLedger, auditLogger audit.Logger, toleranceMinorUnits int64) *OrderService {
 	return &OrderService{
@@ -54,6 +67,11 @@ func (s *OrderService) SetLocker(l Locker) { s.locker = l }
 // shipping/payment ALIASES into the real addresses a merchant needs, for
 // the duration of one checkout call. Wired once at startup.
 func (s *OrderService) SetPrivacyResolver(r PrivacyResolver) { s.privacy = r }
+
+// SetUserRules makes the payment-time re-check use the same per-user
+// guardrails PolicyService evaluated with — otherwise a user who raised
+// their cap would pass policy and then be denied at execution.
+func (s *OrderService) SetUserRules(src UserRulesSource) { s.userRules = src }
 
 // resolveFulfillment materializes the real shipping (and, if one exists,
 // billing) address immediately before a checkout call — the single point in
@@ -140,15 +158,17 @@ func (s *OrderService) Execute(ctx context.Context, idem IdempotencyStore, idemK
 			defer release(context.Background())
 		}
 
-		if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingExecute); err != nil {
-			return nil, err
-		}
-		pi, err := s.intents.Get(ctx, intentID)
+		_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingExecute)
 		if err != nil {
 			return nil, err
 		}
 		if pi.Status != intent.StateApproved {
 			return nil, fmt.Errorf("%w: intent %s is in state %s, not APPROVED", shared.ErrConflict, intentID, pi.Status)
+		}
+		if s.gate != nil {
+			if err := s.gate.CheckExecution(ctx, pi.UserID); err != nil {
+				return nil, err
+			}
 		}
 		a, err := s.approvals.GetByIntent(ctx, intentID)
 		if err != nil {
@@ -180,7 +200,11 @@ func (s *OrderService) Execute(ctx context.Context, idem IdempotencyStore, idemK
 		if err != nil {
 			return nil, fmt.Errorf("app: reading spend ledger: %w", err)
 		}
-		paymentDecision, err := s.provider.EvaluatePayment(ctx, policy.Input{
+		provider, err := providerFor(ctx, s.userRules, s.provider, pi.UserID)
+		if err != nil {
+			return nil, err
+		}
+		paymentDecision, err := provider.EvaluatePayment(ctx, policy.Input{
 			UserID: pi.UserID, AgentID: pi.AgentID, Merchant: refreshed.Merchant,
 			AmountMinorUnits: refreshed.FinalPayable.MinorUnits, Currency: refreshed.FinalPayable.Currency,
 			PaymentProfile: a.PaymentSourceAlias, SpendTodayMinorUnits: spendToday,
@@ -315,10 +339,7 @@ func (s *OrderService) handleExecutionResult(ctx context.Context, pi *intent.Pur
 // success, the merchant's own confirmed order (fetched via GetOrder, not
 // fabricated locally).
 func (s *OrderService) CompleteAuthentication(ctx context.Context, agentID, intentID, merchantOrderID string, success bool) (*ExecuteOutcome, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingExecute); err != nil {
-		return nil, err
-	}
-	pi, err := s.intents.Get(ctx, intentID)
+	_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingExecute)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +387,7 @@ func (s *OrderService) CompleteAuthentication(ctx context.Context, agentID, inte
 // error surfaces and the order stays exactly as the merchant reports it
 // (mandate §69: real integration over fake completeness).
 func (s *OrderService) CancelOrder(ctx context.Context, agentID, intentID string) (*order.Order, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingExecute); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingExecute); err != nil {
 		return nil, err
 	}
 	ord, err := s.orders.GetByIntent(ctx, intentID)
@@ -402,7 +423,7 @@ func (s *OrderService) CancelOrder(ctx context.Context, agentID, intentID string
 }
 
 func (s *OrderService) GetOrderStatus(ctx context.Context, agentID, intentID string) (*order.Order, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermOrdersRead); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermOrdersRead); err != nil {
 		return nil, err
 	}
 	return s.orders.GetByIntent(ctx, intentID)

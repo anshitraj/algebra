@@ -29,7 +29,12 @@ type catalogEntry struct {
 }
 
 // catalog is a small, fixed product list covering the mandate's own example
-// prompts ("Coke Zero and chips", "ingredients to cook pasta for four").
+// prompts ("Coke Zero and chips", "ingredients to cook pasta for four") plus
+// a few clothing entries so a CommerceProfile-driven "buy me a jacket"
+// scenario (internal/domain/commerceprofile) has something real to find —
+// color is deliberately the first word of each name so it disambiguates
+// cleanly through findProducts' first-word match below, and casual/formal
+// items never share a color so a color-only query can't cross-match them.
 var catalog = []catalogEntry{
 	{id: "mock-coke-zero-750ml", brand: "Coca-Cola", name: "Coke Zero 750ml", category: "beverages", price: 6000},
 	{id: "mock-lays-chips-52g", brand: "Lay's", name: "Classic Salted Chips 52g", category: "snacks", price: 2000},
@@ -38,6 +43,9 @@ var catalog = []catalogEntry{
 	{id: "mock-garlic-bread-250g", brand: "Local Bakery", name: "Garlic Bread 250g", category: "groceries", price: 8000},
 	{id: "mock-parmesan-100g", brand: "Go Cheese", name: "Parmesan Cheese 100g", category: "groceries", price: 22000},
 	{id: "mock-gift-card-500", brand: "Generic", name: "₹500 Gift Card", category: "gift_cards", price: 50000},
+	{id: "mock-jacket-black-casual-l", brand: "Urban Basics", name: "Black Casual Jacket - L", category: "clothing", price: 350000},
+	{id: "mock-jacket-navy-casual-l", brand: "Urban Basics", name: "Navy Casual Jacket - L", category: "clothing", price: 380000},
+	{id: "mock-blazer-grey-formal-l", brand: "Formal Co", name: "Grey Formal Blazer - L", category: "clothing", price: 550000},
 }
 
 func findProducts(query string, limit int) []merchant.Product {

@@ -11,6 +11,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -37,6 +38,29 @@ func Connect(ctx context.Context, addr string) (*Client, error) {
 }
 
 func (c *Client) Close() error { return c.rdb.Close() }
+
+// Ping checks the connection, for readiness probes.
+func (c *Client) Ping(ctx context.Context) error { return c.rdb.Ping(ctx).Err() }
+
+// GetJSON reads a cached JSON value into out. Returns false when the key is
+// absent or unreadable — a cache is never a source of truth.
+func (c *Client) GetJSON(ctx context.Context, key string, out any) bool {
+	raw, err := c.rdb.Get(ctx, key).Bytes()
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(raw, out) == nil
+}
+
+// SetJSON caches a value for ttl. Failures are ignored: a cache write that
+// doesn't land must never fail the request it belongs to.
+func (c *Client) SetJSON(ctx context.Context, key string, v any, ttl time.Duration) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_ = c.rdb.Set(ctx, key, raw, ttl).Err()
+}
 
 // Allow implements a fixed-window counter rate limiter: at most limit calls
 // per window for the given key. Returns whether this call is allowed and,

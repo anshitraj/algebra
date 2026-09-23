@@ -106,11 +106,12 @@ const statusTone: Record<string, string> = {
   USER_INTERVENTION_REQUIRED: "bg-danger-tint text-danger",
 };
 
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({ status, label }: { status: string; label?: string }) {
   const tone = statusTone[status] ?? "bg-border text-muted";
+  const text = label ?? status.charAt(0) + status.slice(1).toLowerCase().replace(/_/g, " ");
   return (
-    <span className={`inline-block rounded-full px-2.5 py-1 font-mono text-xs font-medium ${tone}`}>
-      {status}
+    <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${tone}`} title={status}>
+      {text}
     </span>
   );
 }
@@ -139,6 +140,55 @@ export function EmptyState({
       {action && <div className="mt-5">{action}</div>}
     </div>
   );
+}
+
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0">
+        <h1 className="font-display text-[1.75rem] leading-tight font-semibold tracking-tight text-foreground">{title}</h1>
+        {description && <p className="mt-1.5 max-w-2xl text-[0.95rem] leading-relaxed text-muted">{description}</p>}
+      </div>
+      {actions && <div className="flex shrink-0 flex-wrap gap-2.5">{actions}</div>}
+    </div>
+  );
+}
+
+export function Skeleton({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-lg bg-border/60 ${className}`} />;
+}
+
+export function ErrorNote({ children }: { children: ReactNode }) {
+  return (
+    <p role="alert" className="rounded-xl bg-danger-tint px-4 py-3 text-sm text-danger">
+      {children}
+    </p>
+  );
+}
+
+export function rupees(minor: number) {
+  return `₹${(minor / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+export function timeAgo(iso: string) {
+  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+export function itemsSummary(items: { query?: string; name?: string; quantity: number }[]) {
+  return items.map((i) => `${i.quantity > 1 ? `${i.quantity}× ` : ""}${i.query ?? i.name ?? "item"}`).join(", ");
 }
 
 export function formatMoney(m: { minor_units: number; currency: string } | undefined): string {

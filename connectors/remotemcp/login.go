@@ -340,6 +340,10 @@ func wellKnownResourceMetadataURLs(endpoint string) []string {
 	var out []string
 	if p := strings.TrimSuffix(u.Path, "/"); p != "" {
 		out = append(out, origin+"/.well-known/oauth-protected-resource"+p)
+		// Not RFC 9728, but a common MCP-server convention — and where
+		// Swiggy actually serves it (its challenge points at the origin
+		// root, which 404s). Same origin as the endpoint, so no new trust.
+		out = append(out, origin+p+"/.well-known/oauth-protected-resource")
 	}
 	return append(out, origin+"/.well-known/oauth-protected-resource")
 }

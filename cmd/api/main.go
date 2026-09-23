@@ -19,6 +19,7 @@ import (
 
 func main() {
 	logger := logging.New(os.Stdout, slog.LevelInfo)
+	slog.SetDefault(logger)
 
 	cfg, err := config.FromEnv()
 	if err != nil {
@@ -41,7 +42,32 @@ func main() {
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Discovery fans out to merchants with a per-connector budget
+		// (CONNECTOR_TIMEOUT, 20s default) — leave room above it.
+		WriteTimeout:   90 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
+
+	// Expired sessions and used/expired reset tokens are dead weight; sweep
+	// them hourly. Failures are logged, never fatal.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			if n, err := bundle.Accounts.PurgeExpired(ctx); err != nil {
+				logger.Warn("purging expired sessions", "error", err)
+			} else if n > 0 {
+				logger.Info("purged expired sessions and reset tokens", "rows", n)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -50,7 +76,7 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	logger.Info("algebra API listening", "addr", cfg.HTTPAddr)
+	logger.Info("algebra API listening", "addr", cfg.HTTPAddr, "env", cfg.Env)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)

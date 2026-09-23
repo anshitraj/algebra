@@ -55,20 +55,15 @@ func (s *IntentService) CreateIntent(ctx context.Context, idem IdempotencyStore,
 }
 
 func (s *IntentService) GetIntent(ctx context.Context, agentID, id string) (*intent.PurchaseIntent, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
-		return nil, err
-	}
-	return s.intents.Get(ctx, id)
+	_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, id, agentpkg.PermShoppingRead)
+	return pi, err
 }
 
 // CancelIntent moves an intent to CANCELLED. Legal from any state the state
 // machine allows (state_machine.go) — anything else surfaces the
 // *intent.ErrIllegalTransition so the caller knows precisely why it failed.
 func (s *IntentService) CancelIntent(ctx context.Context, agentID, id string) (*intent.PurchaseIntent, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingExecute); err != nil {
-		return nil, err
-	}
-	pi, err := s.intents.Get(ctx, id)
+	_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, id, agentpkg.PermShoppingExecute)
 	if err != nil {
 		return nil, err
 	}

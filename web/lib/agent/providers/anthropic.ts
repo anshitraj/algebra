@@ -1,16 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageParam, Tool, ToolResultBlockParam, ToolUseBlock } from "@anthropic-ai/sdk/resources/messages";
+import type { MessageParam, TextBlock, Tool, ToolResultBlockParam, ToolUseBlock } from "@anthropic-ai/sdk/resources/messages";
 import { AGENT_TOOLS } from "../tools";
-import { executeTool } from "../execute-tool";
-import { detectPendingApproval, type PendingApproval } from "../pending-approval";
-import type { ProviderTurnInput, ProviderTurnResult } from "./types";
+import { runTool } from "../run-tool";
+import type { PendingApproval } from "../pending-approval";
+import { MAX_TOOL_ROUNDS, TOO_MANY_ROUNDS_REPLY, type ProviderTurnInput, type ProviderTurnResult } from "./types";
 
-const MAX_TURNS = 8;
-
-const TOOLS: Tool[] = AGENT_TOOLS.map((t) => ({
+// The tool list is identical on every call, so it's marked as a prompt-cache
+// breakpoint (on the last tool) — repeat turns re-read it from cache.
+const TOOLS: Tool[] = AGENT_TOOLS.map((t, i) => ({
   name: t.name,
   description: t.description,
   input_schema: t.parameters,
+  ...(i === AGENT_TOOLS.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
 }));
 
 export async function runTurn({
@@ -20,51 +21,48 @@ export async function runTurn({
   history,
   userMessage,
   identity,
+  emit,
+  signal,
 }: ProviderTurnInput): Promise<ProviderTurnResult> {
   const client = new Anthropic({ apiKey });
   const messages: MessageParam[] = [...(history as MessageParam[]), { role: "user", content: userMessage }];
   let pendingApproval: PendingApproval | undefined;
 
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const response = await client.messages.create({
-      model,
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools: TOOLS,
-      messages,
-    });
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const response = await client.messages.create(
+      {
+        model,
+        max_tokens: 4096,
+        system: [{ type: "text", text: systemPrompt }],
+        tools: TOOLS,
+        messages,
+      },
+      { signal }
+    );
 
     messages.push({ role: "assistant", content: response.content });
-
     if (response.stop_reason === "pause_turn") continue;
 
+    const text = response.content
+      .filter((b): b is TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .trim();
     const toolUses = response.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
     if (toolUses.length === 0) {
-      const text = response.content
-        .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
-        .map((b) => b.text)
-        .join("\n");
       return { reply: text, history: messages, pendingApproval };
     }
+    if (text) emit({ type: "text", text });
 
     const results: ToolResultBlockParam[] = [];
     for (const use of toolUses) {
       const input = (use.input ?? {}) as Record<string, unknown>;
-      const result = await executeTool(use.name, input, identity);
-      pendingApproval = detectPendingApproval(use.name, input, result) ?? pendingApproval;
-      results.push({
-        type: "tool_result",
-        tool_use_id: use.id,
-        content: JSON.stringify(result),
-        is_error: !result.ok,
-      });
+      const { result, pendingApproval: pa } = await runTool(use.name, input, identity, emit);
+      pendingApproval = pa ?? pendingApproval;
+      results.push({ type: "tool_result", tool_use_id: use.id, content: JSON.stringify(result), is_error: !result.ok });
     }
     messages.push({ role: "user", content: results });
   }
 
-  return {
-    reply: "Stopped after too many tool calls in a row — ask me to continue if you'd like me to keep going.",
-    history: messages,
-    pendingApproval,
-  };
+  return { reply: TOO_MANY_ROUNDS_REPLY, history: messages, pendingApproval };
 }

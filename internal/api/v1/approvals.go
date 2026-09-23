@@ -10,7 +10,7 @@ type approvalResponse struct {
 // getApprovalForIntent is what the Approval UI (mandate §41) calls to
 // render "Agent requesting purchase..." before showing Approve/Reject.
 func (a *API) getApprovalForIntent(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -28,7 +28,7 @@ func (a *API) getApprovalForIntent(w http.ResponseWriter, r *http.Request) {
 // are user actions — see currentUserID's doc comment on why that's a
 // dev-mode placeholder here rather than a real session.
 func (a *API) approveApproval(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -42,7 +42,7 @@ func (a *API) approveApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) rejectApproval(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -56,7 +56,7 @@ func (a *API) rejectApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) reapproveApproval(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return

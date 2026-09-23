@@ -2,6 +2,8 @@
 
 Status: Phase 1 (Foundation) in progress. Written after repository audit, before implementation, per build mandate.
 
+> **This is a point-in-time snapshot**, written before the Next.js console (`web/`), the standalone `Integrator` policy-evaluation surface, and the B2B agentic-payments layer (`Tenant`/`AgenticPaymentIntent`/`paymentprovider.Provider`) existed — several statements below (e.g. "no Next.js console") are now stale by omission, not by correction. For current state, see [README.md](README.md), [docs/B2B_INTEGRATION.md](docs/B2B_INTEGRATION.md), and [docs/PROVIDER_STATUS.md](docs/PROVIDER_STATUS.md). This document is kept as-is rather than rewritten — it's the historical record of the original audit and plan.
+
 ## 1. Repository audit result
 
 `E:\algebra` was empty (no git repo, no source, no docs) at the start of this build. There is nothing to preserve, migrate, or reverse-engineer. This is a greenfield implementation, not a refactor.

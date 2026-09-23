@@ -13,7 +13,7 @@ export default function PaymentSourcesPage() {
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    setSources(await api.listPaymentSources());
+    setSources((await api.listPaymentSources()) ?? []);
   }
 
   useEffect(() => {

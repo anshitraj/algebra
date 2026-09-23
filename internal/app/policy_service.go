@@ -24,7 +24,13 @@ type PolicyService struct {
 	audit       audit.Logger
 	now         func() time.Time
 	approvalTTL time.Duration
+	userRules   UserRulesSource
 }
+
+// SetUserRules makes evaluation use each user's own guardrails (see
+// UserRulesSource) instead of the single platform-default provider. Nil
+// keeps the platform default for everyone.
+func (s *PolicyService) SetUserRules(src UserRulesSource) { s.userRules = src }
 
 func NewPolicyService(intents IntentStore, agents AgentStore, quotes QuoteStore, decisions PolicyDecisionStore, approvals ApprovalStore, ledger SpendLedger, provider policy.Provider, auditLogger audit.Logger, approvalTTL time.Duration) *PolicyService {
 	return &PolicyService{
@@ -40,7 +46,7 @@ func NewPolicyService(intents IntentStore, agents AgentStore, quotes QuoteStore,
 // terminal and nothing — not the agent, not this code — can override it
 // (mandate §8).
 func (s *PolicyService) EvaluateAndTransition(ctx context.Context, agentID, intentID string) (*policy.PolicyDecision, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingExecute); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingExecute); err != nil {
 		return nil, err
 	}
 	pi, q, err := s.loadIntentAndSelectedQuote(ctx, intentID)
@@ -130,7 +136,11 @@ func (s *PolicyService) evaluate(ctx context.Context, pi *intent.PurchaseIntent,
 		International:        pi.Constraints.International,
 		SpendTodayMinorUnits: spendToday,
 	}
-	decision, err := s.provider.EvaluatePurchaseIntent(ctx, input)
+	provider, err := providerFor(ctx, s.userRules, s.provider, pi.UserID)
+	if err != nil {
+		return nil, err
+	}
+	decision, err := provider.EvaluatePurchaseIntent(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("app: policy evaluation failed: %w", err)
 	}
@@ -142,7 +152,7 @@ func (s *PolicyService) evaluate(ctx context.Context, pi *intent.PurchaseIntent,
 // approval, or persisting a decision row. Safe to call as many times as an
 // agent wants while comparing quotes.
 func (s *PolicyService) PreviewDecision(ctx context.Context, agentID, intentID string) (*policy.PolicyDecision, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingRead); err != nil {
 		return nil, err
 	}
 	pi, q, err := s.loadIntentAndSelectedQuote(ctx, intentID)
@@ -157,7 +167,7 @@ func (s *PolicyService) PreviewDecision(ctx context.Context, agentID, intentID s
 // intent's most recent evaluation — it explains by showing the real
 // recorded reasoning, not by generating new prose about it.
 func (s *PolicyService) ExplainDecision(ctx context.Context, agentID, intentID string) (*policy.PolicyDecision, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermPolicyRead); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermPolicyRead); err != nil {
 		return nil, err
 	}
 	return s.decisions.GetLatestByIntent(ctx, intentID)

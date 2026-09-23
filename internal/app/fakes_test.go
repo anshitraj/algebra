@@ -9,9 +9,12 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/approval"
 	"github.com/project-algebra/algebra/internal/domain/audit"
+	"github.com/project-algebra/algebra/internal/domain/commerceprofile"
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/order"
+	"github.com/project-algebra/algebra/internal/domain/paymentintent"
+	"github.com/project-algebra/algebra/internal/domain/policyset"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
 	"github.com/project-algebra/algebra/internal/domain/shared"
@@ -165,20 +168,26 @@ func (f *fakePolicyDecisionStore) GetLatestByIntent(_ context.Context, intentID 
 }
 
 type fakeApprovalStore struct {
-	mu       sync.Mutex
-	byID     map[string]*approval.Approval
-	byIntent map[string]string // intentID -> approvalID (most recent)
+	mu              sync.Mutex
+	byID            map[string]*approval.Approval
+	byIntent        map[string]string // intentID -> approvalID (most recent)
+	byPaymentIntent map[string]string // agenticPaymentIntentID -> approvalID (most recent)
 }
 
 func newFakeApprovalStore() *fakeApprovalStore {
-	return &fakeApprovalStore{byID: map[string]*approval.Approval{}, byIntent: map[string]string{}}
+	return &fakeApprovalStore{byID: map[string]*approval.Approval{}, byIntent: map[string]string{}, byPaymentIntent: map[string]string{}}
 }
 func (f *fakeApprovalStore) Create(_ context.Context, a *approval.Approval) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := *a
 	f.byID[a.ID] = &cp
-	f.byIntent[a.IntentID] = a.ID
+	if a.IntentID != "" {
+		f.byIntent[a.IntentID] = a.ID
+	}
+	if a.AgenticPaymentIntentID != "" {
+		f.byPaymentIntent[a.AgenticPaymentIntentID] = a.ID
+	}
 	return nil
 }
 func (f *fakeApprovalStore) Get(_ context.Context, id string) (*approval.Approval, error) {
@@ -189,6 +198,16 @@ func (f *fakeApprovalStore) Get(_ context.Context, id string) (*approval.Approva
 		return nil, shared.ErrNotFound
 	}
 	cp := *a
+	return &cp, nil
+}
+func (f *fakeApprovalStore) GetByPaymentIntent(_ context.Context, paymentIntentID string) (*approval.Approval, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.byPaymentIntent[paymentIntentID]
+	if !ok {
+		return nil, shared.ErrNotFound
+	}
+	cp := *f.byID[id]
 	return &cp, nil
 }
 func (f *fakeApprovalStore) GetByIntent(_ context.Context, intentID string) (*approval.Approval, error) {
@@ -228,6 +247,153 @@ func (f *fakeApprovalStore) MarkConsumed(_ context.Context, id string) (bool, er
 	}
 	a.Status = approval.StatusConsumed
 	return true, nil
+}
+
+// fakePaymentIntentStore is PaymentIntentStore's in-memory fake — same
+// copy-on-read/write discipline as the other fakes in this file.
+type fakePaymentIntentStore struct {
+	mu   sync.Mutex
+	data map[string]*paymentintent.AgenticPaymentIntent
+}
+
+func newFakePaymentIntentStore() *fakePaymentIntentStore {
+	return &fakePaymentIntentStore{data: map[string]*paymentintent.AgenticPaymentIntent{}}
+}
+func (f *fakePaymentIntentStore) Create(_ context.Context, p *paymentintent.AgenticPaymentIntent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *p
+	f.data[p.ID] = &cp
+	return nil
+}
+func (f *fakePaymentIntentStore) Get(_ context.Context, id string) (*paymentintent.AgenticPaymentIntent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.data[id]
+	if !ok {
+		return nil, shared.ErrNotFound
+	}
+	cp := *p
+	return &cp, nil
+}
+func (f *fakePaymentIntentStore) Update(_ context.Context, p *paymentintent.AgenticPaymentIntent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.data[p.ID]; !ok {
+		return shared.ErrNotFound
+	}
+	cp := *p
+	f.data[p.ID] = &cp
+	return nil
+}
+func (f *fakePaymentIntentStore) ListByTenant(_ context.Context, tenantID string, limit int) ([]paymentintent.AgenticPaymentIntent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []paymentintent.AgenticPaymentIntent
+	for _, p := range f.data {
+		if p.TenantID == tenantID {
+			out = append(out, *p)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+type fakeUserStore struct {
+	mu   sync.Mutex
+	data map[string]*UserRecord
+}
+
+func newFakeUserStore() *fakeUserStore { return &fakeUserStore{data: map[string]*UserRecord{}} }
+
+func (f *fakeUserStore) Create(_ context.Context, id, email, tenantID string, createdAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.data[id] = &UserRecord{ID: id, Email: email, TenantID: tenantID, CreatedAt: createdAt}
+	return nil
+}
+func (f *fakeUserStore) Get(_ context.Context, id string) (*UserRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.data[id]
+	if !ok {
+		return nil, shared.ErrNotFound
+	}
+	cp := *u
+	return &cp, nil
+}
+
+// fakePolicySetStore does not preserve superseded versions the way
+// postgres.PolicySetRepo does (it overwrites in place) — fine for unit
+// tests, which only need "the effective policy updates after SetPolicy",
+// not version history.
+type fakePolicySetStore struct {
+	mu   sync.Mutex
+	data map[string]*policyset.PolicySet
+}
+
+func newFakePolicySetStore() *fakePolicySetStore {
+	return &fakePolicySetStore{data: map[string]*policyset.PolicySet{}}
+}
+func (f *fakePolicySetStore) key(tenantID string, userID *string) string {
+	u := ""
+	if userID != nil {
+		u = *userID
+	}
+	return tenantID + "|" + u
+}
+func (f *fakePolicySetStore) Create(_ context.Context, ps *policyset.PolicySet) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *ps
+	f.data[f.key(ps.TenantID, ps.UserID)] = &cp
+	return nil
+}
+func (f *fakePolicySetStore) GetActive(_ context.Context, tenantID string, userID *string) (*policyset.PolicySet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ps, ok := f.data[f.key(tenantID, userID)]
+	if !ok || ps.SupersededAt != nil {
+		return nil, shared.ErrNotFound
+	}
+	cp := *ps
+	return &cp, nil
+}
+func (f *fakePolicySetStore) SupersedeActive(_ context.Context, tenantID string, userID *string, supersededAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ps, ok := f.data[f.key(tenantID, userID)]; ok {
+		ps.SupersededAt = &supersededAt
+	}
+	return nil
+}
+
+type fakeCommerceProfileStore struct {
+	mu   sync.Mutex
+	data map[string]*commerceprofile.CommerceProfile
+}
+
+func newFakeCommerceProfileStore() *fakeCommerceProfileStore {
+	return &fakeCommerceProfileStore{data: map[string]*commerceprofile.CommerceProfile{}}
+}
+func (f *fakeCommerceProfileStore) Get(_ context.Context, userID string) (*commerceprofile.CommerceProfile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.data[userID]
+	if !ok {
+		return nil, shared.ErrNotFound
+	}
+	cp := *p
+	return &cp, nil
+}
+func (f *fakeCommerceProfileStore) Upsert(_ context.Context, p *commerceprofile.CommerceProfile) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *p
+	f.data[p.UserID] = &cp
+	return nil
 }
 
 type fakeOrderStore struct {

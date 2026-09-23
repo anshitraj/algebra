@@ -38,7 +38,7 @@ const tiers: Tier[] = [
       "Email support, 2-business-day response",
       "Standard uptime SLA",
     ],
-    cta: { label: "Open console", href: "/console" },
+    cta: { label: "Upgrade", href: "/console/billing?upgrade=1" },
     highlighted: true,
   },
   {

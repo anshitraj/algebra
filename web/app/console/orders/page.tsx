@@ -1,76 +1,71 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import * as api from "@/lib/api-client";
-import { getTrackedIntents } from "@/lib/intent-history";
 import type { Order } from "@/lib/types";
-import { EmptyState, Panel, StatusBadge, formatMoney } from "@/components/console/ui";
-
-type Row = { intentId: string; order: Order };
+import { merchantLabel } from "@/lib/agent/steps";
+import { IconPackage } from "@/components/icons";
+import { ErrorNote, PageHeader, Skeleton, StatusBadge, formatMoney, itemsSummary } from "@/components/console/ui";
 
 export default function OrdersPage() {
-  const [rows, setRows] = useState<Row[] | null>(null);
+  const [orders, setOrders] = useState<Order[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
-      const tracked = getTrackedIntents();
-      const results = await Promise.all(
-        tracked.map(async (t) => {
-          try {
-            return { intentId: t.id, order: await api.getOrder(t.id) };
-          } catch {
-            return null;
-          }
-        })
-      );
-      setRows(results.filter((r): r is Row => r !== null));
-    })();
+    api
+      .listMyOrders(100)
+      .then(setOrders)
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't load orders"));
   }, []);
 
   return (
-    <div className="mx-auto max-w-2xl">
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
-        Orders
-      </h1>
-      <p className="mt-1.5 text-sm text-muted">
-        Orders placed from intents tracked in this browser.
-      </p>
-
+    <div className="mx-auto max-w-3xl">
+      <PageHeader title="Orders" description="Everything your agent — or you — actually bought, newest first." />
       <div className="mt-8">
-        {rows === null && <p className="text-sm text-muted">Loading…</p>}
-        {rows?.length === 0 && (
-          <EmptyState
-            title="No orders yet"
-            body="An order appears here once an intent's execute step places it with a merchant connector."
-          />
+        {error && <ErrorNote>{error}</ErrorNote>}
+        {orders === null && !error && (
+          <div className="space-y-3">
+            <Skeleton className="h-14" />
+            <Skeleton className="h-14" />
+            <Skeleton className="h-14" />
+          </div>
         )}
-        {rows && rows.length > 0 && (
-          <Panel className="divide-y divide-border p-0">
-            {rows.map((row) => (
-              <Link
-                key={row.order.order_id}
-                href={`/console/intents/${row.intentId}`}
-                className="flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-primary-tint/40"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">
-                    {row.order.merchant} · {row.order.merchant_order_id}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted">
-                    {new Date(row.order.placed_at).toLocaleString()} ·{" "}
-                    <span className="font-mono">{row.order.provider_mode}</span>
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-sm text-foreground">
-                    {formatMoney(row.order.total)}
-                  </span>
-                  <StatusBadge status={row.order.status} />
-                </div>
-              </Link>
+        {orders?.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-border-strong px-6 py-14 text-center">
+            <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-primary-tint text-primary">
+              <IconPackage size={20} />
+            </span>
+            <p className="font-display mt-4 text-lg font-semibold text-foreground">No orders yet</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted">
+              Ask the agent for something and it lands here once the store confirms.
+            </p>
+            <Link href="/console/agent" className="mt-5 inline-flex h-10 items-center rounded-xl bg-primary px-4 text-sm font-medium text-primary-tint">
+              Open the agent
+            </Link>
+          </div>
+        )}
+        {orders && orders.length > 0 && (
+          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+            {orders.map((o) => (
+              <li key={o.order_id}>
+                <Link href={`/console/intents/${o.intent_id}`} className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-primary-tint/40">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[0.95rem] text-foreground">{itemsSummary(o.items)}</p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {merchantLabel(o.merchant)} · {new Date(o.placed_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })} ·{" "}
+                      <span className="font-mono">{o.merchant_order_id}</span>
+                      {o.provider_mode !== "real" && (
+                        <span className="ml-1.5 rounded bg-border px-1.5 py-px font-mono text-[0.65rem] uppercase">{o.provider_mode}</span>
+                      )}
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm text-foreground tabular-nums">{formatMoney(o.total)}</span>
+                  <StatusBadge status={o.status} />
+                </Link>
+              </li>
             ))}
-          </Panel>
+          </ul>
         )}
       </div>
     </div>

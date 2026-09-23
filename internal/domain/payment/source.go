@@ -43,6 +43,12 @@ type PaymentSource struct {
 	Alias  string     `json:"alias"`
 	Type   SourceType `json:"type"`
 
+	// ProviderMode is sandbox|real, set by whichever CardVaultProvider
+	// tokenized this source (ProviderSandbox.Tokenize sets it from its own
+	// Mode()) — surfaced so a sandbox token can never be mistaken for a
+	// real one downstream.
+	ProviderMode ProviderMode `json:"provider_mode"`
+
 	// ProviderTokenRef is a vault-issued token reference. It is treated as a
 	// secret even though it isn't a PAN: never logged, never returned
 	// through MCP, never shown to an agent.

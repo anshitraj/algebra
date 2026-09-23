@@ -1,96 +1,322 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { AnimatePresence, motion } from "motion/react";
 import { Logo } from "@/components/logo";
-import { useIdentity } from "@/lib/identity-context";
-import { Connect } from "./connect";
+import { initials, useSession } from "@/lib/session";
+import type { User } from "@/lib/types";
+import {
+  IconChat,
+  IconChevronDown,
+  IconGrid,
+  IconInbox,
+  IconList,
+  IconLogOut,
+  IconMenu,
+  IconPackage,
+  IconReceipt,
+  IconSettings,
+  IconSliders,
+  IconStore,
+  IconUser,
+  IconWallet,
+  IconX,
+  Spinner,
+} from "@/components/icons";
+import { ConsoleDataProvider, useConsoleData } from "./console-data";
 
-const navItems = [
-  { href: "/console", label: "Dashboard" },
-  { href: "/console/agent", label: "Agent" },
-  { href: "/console/new", label: "New intent" },
-  { href: "/console/approvals", label: "Approvals" },
-  { href: "/console/orders", label: "Orders" },
-  { href: "/console/payment-sources", label: "Payment sources" },
-  { href: "/console/merchants", label: "Merchants" },
+type NavItem = { href: string; label: string; icon: React.ReactNode; badge?: "approvals" };
+
+const PRIMARY: NavItem[] = [
+  { href: "/console/agent", label: "Agent", icon: <IconChat /> },
+  { href: "/console", label: "Overview", icon: <IconGrid /> },
+  { href: "/console/approvals", label: "Approvals", icon: <IconInbox />, badge: "approvals" },
+  { href: "/console/orders", label: "Orders", icon: <IconPackage /> },
+  { href: "/console/activity", label: "Activity", icon: <IconList /> },
 ];
 
-export function ConsoleShell({ children }: { children: React.ReactNode }) {
-  const { identity, ready, clearIdentity } = useIdentity();
-  const pathname = usePathname();
+const CONTROLS: NavItem[] = [
+  { href: "/console/guardrails", label: "Guardrails", icon: <IconSliders /> },
+  { href: "/console/payment-sources", label: "Payment methods", icon: <IconWallet /> },
+  { href: "/console/profile", label: "Profile & address", icon: <IconUser /> },
+  { href: "/console/merchants", label: "Stores", icon: <IconStore /> },
+  { href: "/console/billing", label: "Plan & billing", icon: <IconReceipt /> },
+];
 
-  if (!ready) return null;
-  if (!identity) return <Connect />;
+function isActive(pathname: string, href: string) {
+  if (href === "/console") return pathname === "/console";
+  return pathname === href || pathname.startsWith(href + "/");
+}
+
+export function ConsoleShell({ children }: { children: React.ReactNode }) {
+  const { user, status } = useSession();
+
+  if (status !== "authenticated" || !user || !user.onboarded) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center text-muted" aria-busy="true">
+        <Spinner size={20} />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="hidden w-60 shrink-0 border-r border-border md:flex md:flex-col">
-        <Link href="/" className="flex items-center gap-2.5 px-6 py-5 text-foreground">
-          <Logo size={22} />
-          <span className="font-display text-[0.95rem] font-semibold tracking-tight">
-            Algebra
-          </span>
-        </Link>
-        <nav className="flex flex-1 flex-col gap-0.5 px-3">
-          {navItems.map((item) => {
-            const active =
-              item.href === "/console" ? pathname === "/console" : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`rounded-lg px-3 py-2 text-sm transition-colors ${
-                  active
-                    ? "bg-primary-tint font-medium text-primary"
-                    : "text-muted hover:bg-primary-tint/60 hover:text-foreground"
-                }`}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="border-t border-border px-4 py-4">
-          <p className="truncate text-xs text-muted" title={identity.email}>
-            {identity.email}
-          </p>
-          <p className="mt-0.5 truncate font-mono text-[0.6875rem] text-muted/70" title={identity.agentId}>
-            {identity.agentId}
-          </p>
-          <button
-            type="button"
-            onClick={clearIdentity}
-            className="mt-2 text-xs font-medium text-danger hover:underline"
-          >
-            Disconnect
-          </button>
-        </div>
+    <ConsoleDataProvider>
+      <ShellFrame user={user}>{children}</ShellFrame>
+    </ConsoleDataProvider>
+  );
+}
+
+function ShellFrame({ user, children }: { user: User; children: React.ReactNode }) {
+  const pathname = usePathname();
+  const [drawer, setDrawer] = useState(false);
+  const fullBleed = pathname === "/console/agent";
+
+  useEffect(() => {
+    // Close the mobile drawer whenever the route changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- responding to navigation
+    setDrawer(false);
+  }, [pathname]);
+
+  return (
+    <div className="flex h-dvh overflow-hidden">
+      <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border bg-surface/60 md:flex">
+        <SidebarContents user={user} pathname={pathname} />
       </aside>
 
-      <div className="flex min-h-screen flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-border px-6 py-4 md:hidden">
-          <Link href="/" className="flex items-center gap-2 text-foreground">
+      <AnimatePresence>
+        {drawer && (
+          <>
+            <motion.div
+              className="fixed inset-0 z-40 bg-foreground/25 md:hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDrawer(false)}
+            />
+            <motion.aside
+              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r border-border bg-background shadow-2xl md:hidden"
+              initial={{ x: "-100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-100%" }}
+              transition={{ type: "spring", stiffness: 380, damping: 38 }}
+              role="dialog"
+              aria-label="Navigation"
+            >
+              <button
+                type="button"
+                onClick={() => setDrawer(false)}
+                aria-label="Close menu"
+                className="absolute top-4 right-3 flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-primary-tint"
+              >
+                <IconX />
+              </button>
+              <SidebarContents user={user} pathname={pathname} />
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
+          <button
+            type="button"
+            onClick={() => setDrawer(true)}
+            aria-label="Open menu"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-foreground hover:bg-primary-tint"
+          >
+            <IconMenu />
+          </button>
+          <Link href="/console" className="flex items-center gap-2 text-foreground">
             <Logo size={20} />
             <span className="font-display text-sm font-semibold">Algebra</span>
           </Link>
-          <button type="button" onClick={clearIdentity} className="text-xs text-danger">
-            Disconnect
-          </button>
+          <MobileApprovalsPill />
         </header>
-        <nav className="flex gap-1 overflow-x-auto border-b border-border px-4 py-2 md:hidden">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="shrink-0 rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-primary-tint hover:text-foreground"
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        <main className="flex-1 px-6 py-8 md:px-10 md:py-10">{children}</main>
+        <main className={`min-h-0 flex-1 ${fullBleed ? "overflow-hidden" : "overflow-y-auto"}`}>
+          {fullBleed ? children : <div className="px-5 py-8 md:px-10 md:py-10">{children}</div>}
+        </main>
       </div>
     </div>
   );
 }
+
+function MobileApprovalsPill() {
+  const { overview } = useConsoleData();
+  const n = overview?.pending_approvals ?? 0;
+  if (!n) return null;
+  return (
+    <Link
+      href="/console/approvals"
+      className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-full bg-accent-tint px-3 text-xs font-medium text-accent"
+    >
+      <IconInbox size={14} /> {n} waiting
+    </Link>
+  );
+}
+
+function SidebarContents({ user, pathname }: { user: User; pathname: string }) {
+  const { overview } = useConsoleData();
+  const pending = overview?.pending_approvals ?? 0;
+
+  const renderItem = (item: NavItem) => {
+    const active = isActive(pathname, item.href);
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={active ? "page" : undefined}
+        className={`group relative flex h-9 items-center gap-3 rounded-lg px-3 text-sm transition-colors ${
+          active ? "font-medium text-foreground" : "text-muted hover:bg-primary-tint/60 hover:text-foreground"
+        }`}
+      >
+        {active && (
+          <motion.span
+            layoutId="nav-active"
+            className="absolute inset-0 rounded-lg bg-primary-tint"
+            transition={{ type: "spring", stiffness: 500, damping: 40 }}
+          />
+        )}
+        <span className={`relative [&>svg]:h-[18px] [&>svg]:w-[18px] ${active ? "text-primary" : ""}`}>{item.icon}</span>
+        <span className="relative flex-1">{item.label}</span>
+        {item.badge === "approvals" && pending > 0 && (
+          <span className="relative min-w-5 rounded-full bg-accent px-1.5 text-center font-mono text-[0.7rem] leading-5 font-medium text-accent-tint tabular-nums">
+            {pending}
+          </span>
+        )}
+      </Link>
+    );
+  };
+
+  return (
+    <>
+      <Link href="/" className="flex h-16 shrink-0 items-center gap-2.5 px-5 text-foreground">
+        <Logo size={22} />
+        <span className="font-display text-[0.95rem] font-semibold tracking-tight">Algebra</span>
+      </Link>
+      <nav className="flex flex-1 flex-col gap-6 overflow-y-auto px-3 pb-4" aria-label="Console">
+        <div className="flex flex-col gap-0.5">{PRIMARY.map(renderItem)}</div>
+        <div>
+          <p className="px-3 pb-1.5 text-xs font-medium text-muted/80">Controls</p>
+          <div className="flex flex-col gap-0.5">{CONTROLS.map(renderItem)}</div>
+        </div>
+        {overview && <SpendMeter spent={overview.spent_today.minor_units} cap={overview.guardrails.max_per_day_minor_units} />}
+      </nav>
+      <UserMenu user={user} />
+    </>
+  );
+}
+
+function SpendMeter({ spent, cap }: { spent: number; cap: number }) {
+  const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
+  const fmt = (m: number) => `₹${(m / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+  return (
+    <Link href="/console/guardrails" className="mx-1 mt-auto block rounded-xl border border-border px-3.5 py-3 transition-colors hover:bg-primary-tint/50">
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="text-muted">Spent today</span>
+        <span className="font-mono text-foreground tabular-nums">
+          {fmt(spent)} <span className="text-muted">/ {fmt(cap)}</span>
+        </span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+        <motion.div
+          className={`h-full rounded-full ${pct > 85 ? "bg-danger" : pct > 60 ? "bg-accent" : "bg-primary"}`}
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+        />
+      </div>
+    </Link>
+  );
+}
+
+function Avatar({ user, size = 32 }: { user: User; size?: number }) {
+  if (user.avatar_url) {
+    // eslint-disable-next-line @next/next/no-img-element -- provider avatar URLs are arbitrary remote hosts
+    return <img src={user.avatar_url} alt="" width={size} height={size} className="shrink-0 rounded-full object-cover" referrerPolicy="no-referrer" />;
+  }
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full bg-primary font-medium text-primary-tint"
+      style={{ width: size, height: size, fontSize: size * 0.38 }}
+    >
+      {initials(user)}
+    </span>
+  );
+}
+
+function UserMenu({ user }: { user: User }) {
+  const { signOut } = useSession();
+  const [open, setOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative border-t border-border p-3">
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.98 }}
+            transition={{ duration: 0.16 }}
+            className="absolute right-3 bottom-full left-3 mb-2 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-[0_16px_40px_-16px_rgba(32,36,29,0.35)]"
+            role="menu"
+          >
+            <Link
+              href="/console/settings"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-sm text-foreground hover:bg-primary-tint"
+            >
+              <IconSettings size={16} /> Account settings
+            </Link>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={leaving}
+              onClick={async () => {
+                setLeaving(true);
+                await signOut();
+              }}
+              className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm text-danger hover:bg-danger-tint disabled:opacity-60"
+            >
+              {leaving ? <Spinner size={16} /> : <IconLogOut size={16} />} Sign out
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-primary-tint/60"
+      >
+        <Avatar user={user} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">{user.name || user.email.split("@")[0]}</span>
+          <span className="block truncate text-xs text-muted">{user.email}</span>
+        </span>
+        <IconChevronDown size={16} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+    </div>
+  );
+}
+
+export { Avatar };

@@ -25,16 +25,16 @@ export function Hero() {
 
           <div className="mt-9 flex flex-wrap items-center gap-4">
             <Link
-              href="/console"
-              className="rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-tint transition-transform hover:scale-[1.03] active:scale-[0.98]"
+              href="/signup"
+              className="rounded-xl bg-primary px-6 py-3 text-sm font-medium text-primary-tint shadow-[0_8px_20px_-10px_color-mix(in_srgb,var(--color-primary)_85%,transparent)] transition-transform hover:scale-[1.02] active:scale-[0.98]"
             >
-              Open console
+              Get started free
             </Link>
             <a
-              href="#how-it-works"
+              href="#get-started"
               className="text-sm font-medium text-foreground underline decoration-border-strong underline-offset-4 transition-colors hover:decoration-foreground"
             >
-              See how it works
+              See the four steps
             </a>
           </div>
 

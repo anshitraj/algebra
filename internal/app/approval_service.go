@@ -8,23 +8,32 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/approval"
 	"github.com/project-algebra/algebra/internal/domain/audit"
 	"github.com/project-algebra/algebra/internal/domain/intent"
+	"github.com/project-algebra/algebra/internal/domain/paymentintent"
 	"github.com/project-algebra/algebra/internal/domain/shared"
 )
 
-// ApprovalService implements the user-approval workflow (mandate §29).
-// Approve/Reject are called with a userID, not an agentID — approval is a
-// user action, a distinct trust boundary from agent authorization (an
-// agent can request a purchase; only the user can approve one).
+// ApprovalService implements the user-approval workflow. Approve/Reject are
+// called with a userID, not an agentID — approval is a user action, a
+// distinct trust boundary from agent authorization (an agent can request a
+// purchase or an agentic payment; only the user can approve one).
+//
+// Exactly one of IntentID / AgenticPaymentIntentID is set on any given
+// approval.Approval — Approve/Reject branch on which, transitioning
+// whichever kind of parent it belongs to. Reapprove stays PurchaseIntent-
+// only: AgenticPaymentIntent has no reapproval-required state (no
+// discovery/requote step whose price could drift between approval and
+// execution the way a merchant quote can).
 type ApprovalService struct {
-	intents   IntentStore
-	approvals ApprovalStore
-	quoteSvc  *QuoteService
-	audit     audit.Logger
-	now       func() time.Time
+	intents        IntentStore
+	paymentIntents PaymentIntentStore
+	approvals      ApprovalStore
+	quoteSvc       *QuoteService
+	audit          audit.Logger
+	now            func() time.Time
 }
 
-func NewApprovalService(intents IntentStore, approvals ApprovalStore, quoteSvc *QuoteService, auditLogger audit.Logger) *ApprovalService {
-	return &ApprovalService{intents: intents, approvals: approvals, quoteSvc: quoteSvc, audit: auditLogger, now: time.Now}
+func NewApprovalService(intents IntentStore, paymentIntents PaymentIntentStore, approvals ApprovalStore, quoteSvc *QuoteService, auditLogger audit.Logger) *ApprovalService {
+	return &ApprovalService{intents: intents, paymentIntents: paymentIntents, approvals: approvals, quoteSvc: quoteSvc, audit: auditLogger, now: time.Now}
 }
 
 // GetByIntent returns the most recent approval for an intent, owned by
@@ -37,6 +46,21 @@ func (s *ApprovalService) GetByIntent(ctx context.Context, userID, intentID stri
 	}
 	if a.UserID != userID {
 		return nil, fmt.Errorf("%w: approval for intent %s does not belong to user %s", shared.ErrUnauthorized, intentID, userID)
+	}
+	return a, nil
+}
+
+// GetByPaymentIntent is GetByIntent's counterpart for the
+// AgenticPaymentIntent flow — resolves the payment-intent-scoped REST/MCP
+// routes (which take a payment_intent_id, not an approval_id) to the
+// underlying approval.
+func (s *ApprovalService) GetByPaymentIntent(ctx context.Context, userID, paymentIntentID string) (*approval.Approval, error) {
+	a, err := s.approvals.GetByPaymentIntent(ctx, paymentIntentID)
+	if err != nil {
+		return nil, err
+	}
+	if a.UserID != userID {
+		return nil, fmt.Errorf("%w: approval for payment intent %s does not belong to user %s", shared.ErrUnauthorized, paymentIntentID, userID)
 	}
 	return a, nil
 }
@@ -76,6 +100,17 @@ func (s *ApprovalService) Approve(ctx context.Context, userID, approvalID string
 		return nil, fmt.Errorf("app: persisting approval: %w", err)
 	}
 
+	if a.AgenticPaymentIntentID != "" {
+		p, err := s.paymentIntents.Get(ctx, a.AgenticPaymentIntentID)
+		if err != nil {
+			return nil, err
+		}
+		if err := transitionPaymentIntent(ctx, s.paymentIntents, s.audit, s.now, p, paymentintent.StateAuthorized, "ApprovalGranted", "user approved"); err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
+
 	pi, err := s.intents.Get(ctx, a.IntentID)
 	if err != nil {
 		return nil, err
@@ -100,6 +135,17 @@ func (s *ApprovalService) Reject(ctx context.Context, userID, approvalID string)
 	a.DecidedAt = &now
 	if err := s.approvals.Update(ctx, a); err != nil {
 		return nil, fmt.Errorf("app: persisting rejection: %w", err)
+	}
+
+	if a.AgenticPaymentIntentID != "" {
+		p, err := s.paymentIntents.Get(ctx, a.AgenticPaymentIntentID)
+		if err != nil {
+			return nil, err
+		}
+		if err := transitionPaymentIntent(ctx, s.paymentIntents, s.audit, s.now, p, paymentintent.StateCancelled, "ApprovalRejected", "user rejected"); err != nil {
+			return nil, err
+		}
+		return a, nil
 	}
 
 	pi, err := s.intents.Get(ctx, a.IntentID)

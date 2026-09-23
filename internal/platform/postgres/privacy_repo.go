@@ -37,7 +37,7 @@ func (r *PrivacyProfileRepo) Put(ctx context.Context, profile *privacy.StoredPro
 	_, err := r.db.Pool.Exec(ctx, `
 		INSERT INTO private_profiles (id, user_id, alias, type, ciphertext, nonce, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
-		ON CONFLICT (user_id, alias) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, type = EXCLUDED.type`,
+		ON CONFLICT (user_id, alias) DO UPDATE SET id = EXCLUDED.id, ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, type = EXCLUDED.type, created_at = EXCLUDED.created_at`,
 		profile.ID, profile.UserID, profile.Alias, string(profile.Type), profile.Ciphertext, profile.Nonce, profile.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: upserting private profile: %w", err)

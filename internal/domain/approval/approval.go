@@ -37,12 +37,22 @@ type HashableItem struct {
 
 // Approval records the exact terms a user consented to, and is the only
 // thing execution is allowed to act on.
+//
+// Exactly one of IntentID or AgenticPaymentIntentID is set — an Approval
+// binds to either a commerce-flow PurchaseIntent (internal/domain/intent,
+// QuoteID/ItemsHash derived from real cart items) or a tenant's
+// AgenticPaymentIntent (internal/domain/paymentintent, which has no
+// items/quote — ItemsHash is computed with an empty item list, still
+// binding merchant+currency+payment-alias, and QuoteID is left empty).
+// This reuses the same CanonicalHash/Matches/MarkConsumed machinery for
+// both rather than building a second approval mechanism.
 type Approval struct {
-	ID       string
-	IntentID string
-	QuoteID  string
-	UserID   string
-	AgentID  string
+	ID                     string
+	IntentID               string
+	AgenticPaymentIntentID string
+	QuoteID                string
+	UserID                 string
+	AgentID                string
 
 	Merchant           string
 	Amount             money.Amount

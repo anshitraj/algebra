@@ -18,6 +18,10 @@ import (
 )
 
 type Config struct {
+	// Env is APP_ENV: "production" turns on the fail-fast checks in
+	// ValidateProduction; anything else is development.
+	Env string
+
 	// DatabaseURL is a standard postgres:// connection string.
 	DatabaseURL string
 	// RedisAddr is host:port for the Redis instance.
@@ -54,6 +58,63 @@ type Config struct {
 	// the capability is off — commerce.web_search returns ErrNotImplemented.
 	GoogleSearchAPIKey   string
 	GoogleSearchEngineID string
+
+	// GeminiAPIKey enables Gemini-grounded shopping web search
+	// (connectors/websearch.Gemini) — preferred over Custom Search when set.
+	// GeminiSearchModel defaults to the stable "latest Flash" alias.
+	GeminiAPIKey      string
+	GeminiSearchModel string
+	// WebSearchCacheTTL is how long a web-search result is reused (Redis).
+	WebSearchCacheTTL time.Duration
+
+	Auth AuthConfig
+
+	Billing BillingConfig
+}
+
+// BillingConfig configures Razorpay billing for Algebra's own plans. Empty
+// keys mean billing is off: everyone stays on the free Developer plan.
+type BillingConfig struct {
+	RazorpayKeyID         string
+	RazorpayKeySecret     string
+	RazorpayWebhookSecret string
+	// GrowthPlanID uses a plan created in the Razorpay dashboard; otherwise
+	// one is created at GrowthPriceMinor on first checkout.
+	GrowthPlanID     string
+	GrowthPriceMinor int64
+}
+
+// AuthConfig configures human sign-in for Algebra's own web app. Every
+// OAuth provider is optional: one with no client ID is simply not offered
+// on the sign-in page. Email + password always works.
+type AuthConfig struct {
+	// PublicWebURL is the origin users reach the web app at (and, through
+	// its /api/v1 rewrite, this API). OAuth redirect URIs and password-reset
+	// links are built from it; https:// also marks session cookies Secure.
+	PublicWebURL string
+
+	GoogleClientID     string
+	GoogleClientSecret string
+	GitHubClientID     string
+	GitHubClientSecret string
+
+	// ResendAPIKey/EmailFrom enable real password-reset email. Without
+	// them, reset links are written to the API's log (development only).
+	ResendAPIKey string
+	EmailFrom    string
+
+	SessionTTL time.Duration
+
+	// DevHeaderAuth re-enables the pre-accounts development shortcuts:
+	// X-User-ID as a human identity, and unauthenticated POST /users and
+	// POST /agents. Off by default; never enable it on a reachable host —
+	// it lets any caller act as any user.
+	DevHeaderAuth bool
+}
+
+// CookieSecure reports whether session cookies must be Secure.
+func (a AuthConfig) CookieSecure() bool {
+	return strings.HasPrefix(a.PublicWebURL, "https://")
 }
 
 // DefaultEnabledMerchants is every connector registered unless
@@ -141,6 +202,7 @@ func FromEnv() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
+		Env:             strings.ToLower(getEnv("APP_ENV", "development")),
 		DatabaseURL:     getEnv("DATABASE_URL", "postgres://algebra:algebra@localhost:5432/algebra?sslmode=disable"),
 		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
 		MasterKeyBase64: os.Getenv("ALGEBRA_MASTER_KEY"),
@@ -172,6 +234,41 @@ func FromEnv() (*Config, error) {
 
 	cfg.GoogleSearchAPIKey = os.Getenv("GOOGLE_SEARCH_API_KEY")
 	cfg.GoogleSearchEngineID = os.Getenv("GOOGLE_SEARCH_ENGINE_ID")
+	cfg.GeminiAPIKey = getEnv("GEMINI_API_KEY", os.Getenv("GOOGLE_GEMINI_API"))
+	cfg.GeminiSearchModel = os.Getenv("GEMINI_SEARCH_MODEL")
+	webSearchTTL, err := getDuration("WEB_SEARCH_CACHE_TTL", 10*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	cfg.WebSearchCacheTTL = webSearchTTL
+
+	sessionTTL, err := getDuration("SESSION_TTL", 30*24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Auth = AuthConfig{
+		PublicWebURL:       strings.TrimRight(getEnv("PUBLIC_WEB_URL", "http://localhost:3000"), "/"),
+		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
+		EmailFrom:          getEnv("EMAIL_FROM", "Algebra <no-reply@algebra.local>"),
+		SessionTTL:         sessionTTL,
+		DevHeaderAuth:      os.Getenv("ALGEBRA_DEV_AUTH") == "true",
+	}
+
+	growthINR, err := getInt64("GROWTH_PRICE_INR", 8499)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Billing = BillingConfig{
+		RazorpayKeyID:         os.Getenv("RAZORPAY_KEY_ID"),
+		RazorpayKeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
+		RazorpayWebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
+		GrowthPlanID:          os.Getenv("RAZORPAY_PLAN_GROWTH"),
+		GrowthPriceMinor:      growthINR * 100,
+	}
 
 	connectorTimeout, err := getDuration("CONNECTOR_TIMEOUT", defaultConnectorTimeout)
 	if err != nil {
@@ -198,8 +295,58 @@ func FromEnv() (*Config, error) {
 	if _, err := cfg.MasterKey(); err != nil {
 		return nil, err
 	}
+	if cfg.IsProduction() {
+		if err := cfg.ValidateProduction(); err != nil {
+			return nil, err
+		}
+	}
 
 	return cfg, nil
+}
+
+// IsProduction reports APP_ENV=production.
+func (c *Config) IsProduction() bool { return c.Env == "production" }
+
+// ValidateProduction refuses to start a production process with a setting
+// that is only safe on a developer's machine. Every problem is reported at
+// once, so a deploy fails with the full list rather than one at a time.
+func (c *Config) ValidateProduction() error {
+	var problems []string
+	if !strings.HasPrefix(c.Auth.PublicWebURL, "https://") {
+		problems = append(problems, "PUBLIC_WEB_URL must be https:// (session cookies are only Secure over https)")
+	}
+	if c.Auth.DevHeaderAuth {
+		problems = append(problems, "ALGEBRA_DEV_AUTH must be off — it lets any caller act as any user")
+	}
+	if c.Merchants.IsEnabled("mock") && os.Getenv("ALLOW_MOCK_MERCHANT") != "true" {
+		problems = append(problems, "ENABLED_MERCHANTS includes the mock test store — remove it (or set ALLOW_MOCK_MERCHANT=true for a staging environment)")
+	}
+	if c.Auth.ResendAPIKey == "" {
+		problems = append(problems, "RESEND_API_KEY is required — without it password-reset links would be written to logs")
+	}
+	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) == "" {
+		problems = append(problems, "REDIS_ADDR is required — rate limiting and execution locks depend on it")
+	}
+	if strings.Contains(c.DatabaseURL, "sslmode=disable") {
+		problems = append(problems, "DATABASE_URL must not use sslmode=disable")
+	}
+	if c.Billing.RazorpayKeyID != "" {
+		if strings.HasPrefix(c.Billing.RazorpayKeyID, "rzp_test_") && os.Getenv("ALLOW_TEST_PAYMENTS") != "true" {
+			problems = append(problems, "RAZORPAY_KEY_ID is a test key (rzp_test_) — use live keys, or set ALLOW_TEST_PAYMENTS=true for staging")
+		}
+		if c.Billing.RazorpayWebhookSecret == "" {
+			problems = append(problems, "RAZORPAY_WEBHOOK_SECRET is required with Razorpay — renewals and failed charges arrive by webhook")
+		}
+	}
+	for _, o := range c.CORSAllowedOrigins {
+		if !strings.HasPrefix(o, "https://") {
+			problems = append(problems, fmt.Sprintf("CORS_ALLOWED_ORIGINS entry %q must be https://", o))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config: refusing to start with APP_ENV=production:\n  - %s", strings.Join(problems, "\n  - "))
 }
 
 // MasterKey decodes MasterKeyBase64 into the 32-byte key AESGCMEncryptor

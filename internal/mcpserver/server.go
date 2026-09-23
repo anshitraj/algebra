@@ -51,6 +51,15 @@ type Server struct {
 	Integrators       app.IntegratorStore
 	TransactionPolicy *app.TransactionPolicyService
 
+	// PaymentIntents backs the payments.create_intent/get_intent/execute/
+	// get_status tools — the B2B agentic-payments surface. See
+	// internal/domain/paymentintent's package doc.
+	PaymentIntents *app.PaymentIntentService
+
+	// CommerceProfiles backs profiles.get_commerce_profile/
+	// update_commerce_preferences — see internal/domain/commerceprofile.
+	CommerceProfiles *app.CommerceProfileService
+
 	// Limiter is optional (mandate §35/§49) — nil means no MCP-level rate
 	// limiting, which is fine for local stdio development and not fine for
 	// a production streamable-HTTP deployment. See rateLimitMiddleware.
@@ -109,5 +118,6 @@ func NewMCPServer(srv *Server) *gomcp.Server {
 	srv.registerPaymentsTools(s)
 	srv.registerProfilesTools(s)
 	srv.registerPolicyTools(s)
+	srv.registerPaymentIntentTools(s)
 	return s
 }

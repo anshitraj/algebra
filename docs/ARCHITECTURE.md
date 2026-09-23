@@ -1,6 +1,11 @@
 # Architecture
 
-Project Algebra is an agentic-commerce **control plane**: it turns a user instruction into a structured `PurchaseIntent`, then safely orchestrates discovery, policy, privacy, payment, and merchant execution around it. It never gives an AI model unrestricted access to money — agents get scoped capabilities and aliases, never secrets.
+Project Algebra is agentic-**payments** infrastructure: businesses (card apps, wallets, fintechs, stablecoin apps) integrate it so their own end users can grant AI agents controlled spending authority over payment sources the business already holds — see `docs/B2B_INTEGRATION.md`. It never gives an AI model unrestricted access to money — agents get scoped capabilities and aliases, never secrets.
+
+Two primitives live side by side in the same control plane, sharing policy/approval/audit infrastructure but each with its own state machine:
+
+- **`PurchaseIntent`** (`internal/domain/intent`) — commerce/discovery-shaped: items, merchant search, quotes. Algebra's own first-party reference console (`web/`) uses this.
+- **`AgenticPaymentIntent`** (`internal/domain/paymentintent`) — a tenant's agent requesting to spend a bounded amount at a known merchant, no discovery step. The B2B product itself. See `docs/AGENTIC_PAYMENT_INTENT.md`.
 
 ## 1. System context
 
@@ -103,13 +108,43 @@ stateDiagram-v2
     PARTIALLY_COMPLETED --> [*]
 ```
 
-## 4. Why Go / Python / TypeScript
+## 4. AgenticPaymentIntent flow (B2B)
+
+```mermaid
+sequenceDiagram
+    participant Tenant as Tenant backend
+    participant Agent
+    participant API as Algebra REST/MCP
+    participant Policy as PolicyProvider (tenant's persisted PolicySet)
+    participant PP as paymentprovider.Provider
+    participant User as End user (Tenant's own app UI)
+
+    Tenant->>API: POST /tenants/{id}/policy-sets (once, or whenever policy changes)
+    Agent->>API: POST /payment-intents (merchant, amount, payment_source_alias)
+    API->>Policy: EvaluatePurchaseIntent
+    Policy-->>API: ALLOW | DENY | REQUIRE_APPROVAL
+    alt DENY
+        API-->>Agent: DENIED (terminal) + webhook payment_intent.policy_denied
+    else REQUIRE_APPROVAL
+        API-->>Agent: APPROVAL_REQUIRED + webhook payment_intent.approval_required
+        User->>API: POST /payment-intents/{id}/approve
+    end
+    Agent->>API: POST /payment-intents/{id}/execute
+    API->>PP: RegisterPaymentSource -> CreateDelegatedAuthorization -> RequestAuthentication -> CreateScopedCredential -> ExecutePayment
+    PP-->>API: PaymentResult (authoritative — never fabricated)
+    API-->>Agent: SUCCEEDED + provider_transaction_id
+    API-->>Tenant: webhook payment_intent.succeeded (signed, HMAC-SHA256)
+```
+
+There is no `approve` tool on either transport — an agent can request a payment, only a human (through the tenant's own app) can approve one. Full detail: `docs/B2B_INTEGRATION.md`, `docs/AGENTIC_PAYMENT_INTENT.md`, `docs/PAYMENT_PROVIDER_INTERFACE.md`.
+
+## 5. Why Go / Python / TypeScript
 
 - **Go** (this build): everything on the money/authorization path — API gateway, MCP server, intent/policy/approval/payment/order services, audit. Latency-sensitive, needs strong typing and no GIL for concurrent merchant fan-out.
 - **Python** (interfaces designed, not built in Phase 1): product discovery, catalog normalization, coupon/offer parsing, ranking. Explicitly **not** the authorization authority — a Python worker can propose a normalized product/offer, it cannot approve a payment.
 - **TypeScript** (interfaces designed, not built in Phase 1): Next.js console, browser extension, SDK. Calls the same REST/MCP surface as any other client — no special back-door.
 
-## 5. Module boundaries (Go modular monolith)
+## 6. Module boundaries (Go modular monolith)
 
 ```
 internal/domain     entities + interfaces, zero I/O, fully unit-testable
@@ -118,11 +153,12 @@ internal/platform   postgres, redis, config, logging/redaction
 internal/api/v1     REST transport (thin)
 internal/mcpserver  MCP transport (thin)
 connectors/*        MerchantConnector implementations; connectors/remotemcp is the shared OAuth + MCP client for remote-MCP merchants
-providers/*         CardVaultProvider / ConfidentialComputeProvider implementations
+providers/*         CardVaultProvider / ConfidentialComputeProvider / paymentprovider.Provider implementations
+policy/             public (non-internal/) package — policy.Rules/Provider/LocalProvider, go-gettable by third parties
 ```
 
 `internal/app` depends on `internal/domain` interfaces, never on concrete connectors/providers directly — those are injected at `cmd/api` / `cmd/mcp` startup. This is what makes "split into services later" realistic: the seam is already an interface boundary, not a package-private function call.
 
-## 6. Deployment shape (target — see [GCP_DEPLOYMENT.md](GCP_DEPLOYMENT.md))
+## 7. Deployment shape (target — see [GCP_DEPLOYMENT.md](GCP_DEPLOYMENT.md))
 
 Go API/MCP → Cloud Run. Postgres → Cloud SQL. Redis → Memorystore. Async events → Pub/Sub. Secrets → Secret Manager. Envelope-encryption keys → Cloud KMS. Nothing in this repo deploys itself yet; this is the target mapping, not a claim of an existing deployment.
