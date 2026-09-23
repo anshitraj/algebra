@@ -1,119 +1,75 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/api-client";
-import { getTrackedIntents } from "@/lib/intent-history";
-import type { Approval } from "@/lib/types";
-import { Button, EmptyState, Panel, StatusBadge, formatMoney } from "@/components/console/ui";
-
-type Row = { intentId: string; summary: string; approval: Approval };
+import type { ApprovalActivity } from "@/lib/types";
+import { IconShield } from "@/components/icons";
+import { useConsoleData } from "@/components/console/console-data";
+import { ApprovalRow } from "@/components/console/approval-row";
+import { ErrorNote, PageHeader, Skeleton } from "@/components/console/ui";
 
 export default function ApprovalsPage() {
-  const [rows, setRows] = useState<Row[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const { refreshOverview } = useConsoleData();
+  const [rows, setRows] = useState<ApprovalActivity[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    const tracked = getTrackedIntents();
-    const results = await Promise.all(
-      tracked.map(async (t) => {
-        try {
-          const approval = await api.getApprovalForIntent(t.id);
-          if (approval.Status !== "PENDING" && approval.Status !== "REAPPROVAL_REQUIRED") return null;
-          return { intentId: t.id, summary: t.summary, approval };
-        } catch {
-          return null;
-        }
-      })
-    );
-    setRows(results.filter((r): r is Row => r !== null));
-  }
-
-  useEffect(() => {
-    // Fetching from the REST API on mount — the standard client-fetch
-    // pattern; setState happens inside load()'s own resolved promise.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
+  const load = useCallback(async () => {
+    try {
+      setRows(await api.listMyApprovals());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load approvals");
+    }
   }, []);
 
-  async function decide(row: Row, action: "approve" | "reject") {
-    setBusy(row.approval.ID);
-    try {
-      if (action === "approve") {
-        if (row.approval.Status === "REAPPROVAL_REQUIRED") {
-          await api.reapproveApproval(row.approval.ID);
-        } else {
-          await api.approveApproval(row.approval.ID);
-        }
-      } else {
-        await api.rejectApproval(row.approval.ID);
-      }
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  }
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetching from the REST API on mount
+    load();
+    const id = window.setInterval(load, 15000);
+    return () => window.clearInterval(id);
+  }, [load]);
 
   return (
-    <div className="mx-auto max-w-2xl">
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
-        Approvals
-      </h1>
-      <p className="mt-1.5 text-sm text-muted">
-        Pending approvals for intents tracked in this browser — there is no
-        server-side approvals inbox endpoint, so this checks each tracked
-        intent&rsquo;s own approval.
-      </p>
-
+    <div className="mx-auto max-w-3xl">
+      <PageHeader
+        title="Approvals"
+        description="Purchases your guardrails sent back to you. Each approval is bound to one merchant, one set of items and one amount — if the price moves, you'll be asked again."
+      />
       <div className="mt-8">
-        {rows === null && <p className="text-sm text-muted">Loading…</p>}
+        {error && <ErrorNote>{error}</ErrorNote>}
+        {rows === null && !error && (
+          <div className="space-y-3">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-16" />
+          </div>
+        )}
         {rows?.length === 0 && (
-          <EmptyState
-            title="Nothing pending"
-            body="Approvals show up here once a purchase intent's policy decision is REQUIRE_APPROVAL."
-          />
+          <div className="rounded-2xl border border-dashed border-border-strong px-6 py-14 text-center">
+            <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-primary-tint text-primary">
+              <IconShield size={20} />
+            </span>
+            <p className="font-display mt-4 text-lg font-semibold text-foreground">All clear</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted">
+              When a purchase goes over your auto-approve line, it waits here until you decide.{" "}
+              <Link href="/console/guardrails" className="text-primary hover:underline">
+                Adjust the line
+              </Link>
+            </p>
+          </div>
         )}
         {rows && rows.length > 0 && (
-          <div className="space-y-3">
-            {rows.map((row) => (
-              <Panel key={row.approval.ID}>
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <Link
-                      href={`/console/intents/${row.intentId}`}
-                      className="font-display text-sm font-semibold text-foreground hover:text-primary"
-                    >
-                      {row.summary}
-                    </Link>
-                    <p className="mt-1 text-xs text-muted">
-                      {row.approval.Merchant} · {row.approval.PaymentSourceAlias}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={row.approval.Status} />
-                    <span className="font-mono text-sm text-foreground">
-                      {formatMoney(row.approval.Amount)}
-                    </span>
-                  </div>
-                </div>
-                <div className="mt-4 flex gap-3">
-                  <Button
-                    disabled={busy !== null}
-                    onClick={() => decide(row, "approve")}
-                  >
-                    {busy === row.approval.ID ? "Working…" : "Approve"}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={busy !== null}
-                    onClick={() => decide(row, "reject")}
-                  >
-                    Reject
-                  </Button>
-                </div>
-              </Panel>
+          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+            {rows.map((a) => (
+              <ApprovalRow
+                key={a.approval_id}
+                a={a}
+                onDone={() => {
+                  load();
+                  refreshOverview();
+                }}
+              />
             ))}
-          </div>
+          </ul>
         )}
       </div>
     </div>

@@ -16,7 +16,7 @@ type PaymentSourceRepo struct{ db *DB }
 func NewPaymentSourceRepo(db *DB) *PaymentSourceRepo { return &PaymentSourceRepo{db: db} }
 
 const paymentSourceSelectSQL = `
-	SELECT id, user_id, alias, type, provider_token_ref, network, last4, issuer_meta,
+	SELECT id, user_id, alias, type, provider_token_ref, provider_mode, network, last4, issuer_meta,
 	       COALESCE(expiry_meta,''), COALESCE(nickname,''), COALESCE(billing_profile_id,''),
 	       capabilities, created_at, revoked_at
 	FROM payment_sources`
@@ -30,11 +30,10 @@ func (r *PaymentSourceRepo) Create(ctx context.Context, s *payment.PaymentSource
 	if err != nil {
 		return fmt.Errorf("postgres: marshaling capabilities: %w", err)
 	}
-	// ProviderMode is not modeled as a domain field on PaymentSource today
-	// (it lives on the connector/vault, not the source) — default to
-	// "sandbox" unless the source's own vault-assigned reference says
-	// otherwise. Kept explicit rather than guessed silently.
-	providerMode := "sandbox"
+	providerMode := string(s.ProviderMode)
+	if providerMode == "" {
+		providerMode = string(payment.ProviderModeSandbox)
+	}
 
 	_, err = r.db.Pool.Exec(ctx, `
 		INSERT INTO payment_sources (id, user_id, alias, type, provider_token_ref, provider_mode, network, last4,
@@ -99,10 +98,10 @@ type rowScanner interface {
 
 func scanPaymentSourceRow(row rowScanner) (*payment.PaymentSource, error) {
 	var s payment.PaymentSource
-	var sourceType string
+	var sourceType, providerMode string
 	var issuerMetaRaw, capabilitiesRaw []byte
 
-	err := row.Scan(&s.ID, &s.UserID, &s.Alias, &sourceType, &s.ProviderTokenRef, &s.Network, &s.Last4,
+	err := row.Scan(&s.ID, &s.UserID, &s.Alias, &sourceType, &s.ProviderTokenRef, &providerMode, &s.Network, &s.Last4,
 		&issuerMetaRaw, &s.ExpiryMeta, &s.Nickname, &s.BillingProfileID, &capabilitiesRaw, &s.CreatedAt, &s.RevokedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -111,6 +110,7 @@ func scanPaymentSourceRow(row rowScanner) (*payment.PaymentSource, error) {
 		return nil, fmt.Errorf("postgres: scanning payment source: %w", err)
 	}
 	s.Type = payment.SourceType(sourceType)
+	s.ProviderMode = payment.ProviderMode(providerMode)
 	if len(issuerMetaRaw) > 0 {
 		if err := json.Unmarshal(issuerMetaRaw, &s.IssuerMeta); err != nil {
 			return nil, fmt.Errorf("postgres: decoding issuer metadata: %w", err)

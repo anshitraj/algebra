@@ -45,17 +45,17 @@ export type IntentConstraints = {
   international?: boolean;
 };
 
-// NOTE: internal/api/v1/intents.go's intentResponse is deliberately thin —
-// createIntent/getIntent/cancelIntent all return only these three fields,
-// never the full PurchaseIntent (items, constraints, user_id, agent_id,
-// timestamps aren't sent back). Confirmed by reading intentResponse and
-// toIntentResponse directly, not assumed from the domain struct. The
-// console keeps its own item summary client-side (lib/intent-history.ts)
-// because of this.
+// internal/api/v1/intents.go's intentResponse: what the owner needs to
+// render an intent — never user/agent IDs or metadata.
 export type Intent = {
   intent_id: string;
   status: IntentStatus;
   selected_quote_id?: string;
+  items: IntentItem[];
+  category?: string;
+  max_total_minor_units?: number;
+  currency?: string;
+  created_at: string;
 };
 
 export type Offer = {
@@ -251,4 +251,155 @@ export type ExecuteResult = {
   reason?: string;
 };
 
+// Matches internal/domain/commerceprofile.CommerceProfile. Preferences is
+// deliberately a free-form category -> attributes map, not a fixed schema —
+// see the Go package doc for why. default_shipping_alias/default_payment_alias
+// are pointers into the EXISTING alias systems (privacy profiles /
+// payment sources) — this type never carries a resolved address or a
+// payment credential.
+export type CommerceProfile = {
+  user_id: string;
+  default_shipping_alias?: string;
+  default_payment_alias?: string;
+  preferences: Record<string, Record<string, unknown>>;
+  updated_at?: string;
+};
+
 export type ApiErrorBody = { error: string };
+
+// --- accounts (internal/api/v1/auth.go, me.go) ---
+
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  avatar_url?: string;
+  email_verified: boolean;
+  onboarded: boolean;
+  has_password: boolean;
+  linked_providers: string[];
+  created_at: string;
+};
+
+export type AuthProviders = { password: boolean; google: boolean; github: boolean };
+
+export type Guardrails = {
+  currency: string;
+  approval_threshold_minor_units: number;
+  max_per_purchase_minor_units: number;
+  max_per_day_minor_units: number;
+  blocked_categories: string[];
+  blocked_merchants?: string[];
+  international_requires_approval: boolean;
+};
+
+export type GuardrailsResponse = Guardrails & {
+  is_default?: boolean;
+  known_categories: string[];
+  platform_max_per_day_minor_units: number;
+};
+
+export type SessionInfo = {
+  id: string;
+  user_agent: string;
+  ip: string;
+  created_at: string;
+  last_seen_at: string;
+  current: boolean;
+};
+
+export type Overview = {
+  spent_today: Money;
+  pending_approvals: number;
+  orders_total: number;
+  guardrails: Guardrails;
+};
+
+export type IntentActivity = {
+  intent_id: string;
+  status: IntentStatus;
+  items: IntentItem[];
+  category?: string;
+  merchant?: string;
+  amount?: Money;
+  created_at: string;
+  updated_at: string;
+  created_by_agent: boolean;
+};
+
+export type ApprovalActivity = {
+  approval_id: string;
+  intent_id: string;
+  status: ApprovalStatus;
+  merchant: string;
+  amount: Money;
+  payment_source_alias: string;
+  items: IntentItem[];
+  created_at: string;
+  expires_at: string;
+};
+
+export type ShippingProfile = {
+  recipient_name: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country: string;
+  phone: string;
+};
+
+export type BillingPlan = "developer" | "growth";
+
+export type SubscriptionStatus =
+  | "created"
+  | "authenticated"
+  | "active"
+  | "pending"
+  | "halted"
+  | "cancelled"
+  | "completed"
+  | "expired";
+
+export type Subscription = {
+  plan: BillingPlan;
+  provider: string;
+  provider_subscription_id: string;
+  status: SubscriptionStatus;
+  current_period_start?: string;
+  current_period_end?: string;
+  cancel_at_period_end: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BillingStatus = {
+  plan: BillingPlan;
+  entitlement: { included_executions: number; hard_limit: boolean };
+  used_this_month: number;
+  period_start: string;
+  subscription?: Subscription;
+  checkout_available: boolean;
+  test_mode: boolean;
+  growth_price_minor_units: number;
+  currency: string;
+};
+
+export type CheckoutSession = {
+  key_id: string;
+  subscription_id: string;
+  test_mode: boolean;
+  prefill: { name: string; email: string };
+};
+
+export type OnboardingAnswers = {
+  name?: string;
+  use_cases: string[];
+  priority: string;
+  household: string;
+  dietary: string[];
+  preferred_merchants: string[];
+  guardrails: Guardrails;
+  shipping?: ShippingProfile;
+};

@@ -41,6 +41,9 @@ type DiscoveryService struct {
 	// webSearch is the optional general web-search fallback — see
 	// SetWebSearcher and SearchWeb. Nil means the capability is off.
 	webSearch WebSearcher
+	// searchCache is optional — see SetSearchCache.
+	searchCache    SearchCache
+	searchCacheTTL time.Duration
 }
 
 func NewDiscoveryService(intents IntentStore, agents AgentStore, quotes QuoteStore, connectors *ConnectorRegistry, auditLogger audit.Logger, quoteTTL time.Duration) *DiscoveryService {
@@ -66,6 +69,15 @@ func (s *DiscoveryService) SetURLAllowlist(allowed *merchant.AllowedDomains) {
 // once during wiring, only when GOOGLE_SEARCH_API_KEY and
 // GOOGLE_SEARCH_ENGINE_ID are configured. Nil (never called) means
 // SearchWeb always reports the capability as off.
+// SetSearchCache caches web-search results for ttl. Prices move, so this is
+// minutes, not hours; the UI labels them "as seen on the web" either way.
+func (s *DiscoveryService) SetSearchCache(c SearchCache, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	s.searchCache, s.searchCacheTTL = c, ttl
+}
+
 func (s *DiscoveryService) SetWebSearcher(ws WebSearcher) {
 	s.webSearch = ws
 }
@@ -157,10 +169,7 @@ func (s *DiscoveryService) candidateMerchants(pi *intent.PurchaseIntent) []merch
 // degrades to "fewer options" rather than an opaque overall error, per the
 // per-provider circuit-breaker principle in mandate §38.
 func (s *DiscoveryService) Discover(ctx context.Context, agentID, intentID string) ([]*quote.CheckoutQuote, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
-		return nil, err
-	}
-	pi, err := s.intents.Get(ctx, intentID)
+	_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingRead)
 	if err != nil {
 		return nil, err
 	}
@@ -248,23 +257,41 @@ func (s *DiscoveryService) SearchProducts(ctx context.Context, agentID, query st
 	return out, nil
 }
 
-// SearchWeb is the last-resort fallback when no connected merchant can find
-// the product: general web-search results (title/snippet/link only — no
-// price, no cart, never an order) for an agent to hand to the user, same
-// non-custodial shape as a merchant's HandoffURL but not scoped to one
-// storefront. Off (ErrNotImplemented) unless GOOGLE_SEARCH_API_KEY and
-// GOOGLE_SEARCH_ENGINE_ID are configured.
+// SearchWeb shows what's actually out there beyond the connected merchants:
+// live web listings (store, product, the price the result showed, a link)
+// for an agent to hand to the user — never a quote, never a cart, never an
+// order; same non-custodial shape as a merchant's HandoffURL but not scoped
+// to one storefront. Off (ErrNotImplemented) unless GEMINI_API_KEY (or
+// Custom Search credentials) is configured.
 func (s *DiscoveryService) SearchWeb(ctx context.Context, agentID, query string, limit int) ([]websearch.Result, error) {
 	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
 		return nil, err
 	}
 	if s.webSearch == nil {
-		return nil, fmt.Errorf("%w: web search fallback is not configured (set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID)", shared.ErrNotImplemented)
+		return nil, fmt.Errorf("%w: web search is not configured (set GEMINI_API_KEY, or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_ENGINE_ID)", shared.ErrNotImplemented)
 	}
 	if limit <= 0 {
 		limit = 5
 	}
-	return s.webSearch.Search(ctx, query, limit)
+	// Normalized so "Coke Zero", "coke zero" and "  Coke  Zero " share one
+	// cached answer.
+	cacheKey := fmt.Sprintf("algebra:websearch:%d:%s", limit, strings.ToLower(strings.Join(strings.Fields(query), " ")))
+	if s.searchCache != nil {
+		var cached []websearch.Result
+		if s.searchCache.GetJSON(ctx, cacheKey, &cached) {
+			return cached, nil
+		}
+	}
+	results, err := s.webSearch.Search(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Only cache a useful answer: an empty result is often a transient
+	// upstream hiccup, and caching it would hide the product for minutes.
+	if s.searchCache != nil && len(results) > 0 {
+		s.searchCache.SetJSON(ctx, cacheKey, results, s.searchCacheTTL)
+	}
+	return results, nil
 }
 
 // handoffLink returns a connector's merchant-owned search link, if it has

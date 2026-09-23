@@ -17,7 +17,7 @@ type createShippingProfileRequest struct {
 // existing). The plaintext address in the request body is encrypted before
 // it touches storage and is never logged (mandate §25/§50).
 func (a *API) createShippingProfile(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -40,7 +40,7 @@ type createBillingProfileRequest struct {
 }
 
 func (a *API) createBillingProfile(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -58,7 +58,7 @@ func (a *API) createBillingProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listShippingAliases(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return

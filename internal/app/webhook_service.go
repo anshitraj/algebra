@@ -99,6 +99,17 @@ func VerifyHMACSignature(payload []byte, signatureHeader, secret string) bool {
 	return hmac.Equal([]byte(got), []byte(expected))
 }
 
+// SignHMAC is VerifyHMACSignature's sending-side counterpart, used by
+// WebhookDispatchService to sign outbound payloads to a tenant's registered
+// endpoint with the same generic HMAC-SHA256 reference scheme. Returns the
+// raw hex digest — callers prefix it with "sha256=" for the header value,
+// matching what VerifyHMACSignature expects to receive.
+func SignHMAC(payload []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 func payloadFingerprint(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

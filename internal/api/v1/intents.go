@@ -28,14 +28,25 @@ type createIntentRequest struct {
 	Constraints constraintsRequest `json:"constraints"`
 }
 
+// intentResponse carries what the owner needs to render an intent — never
+// user/agent IDs or metadata.
 type intentResponse struct {
-	IntentID        string `json:"intent_id"`
-	Status          string `json:"status"`
-	SelectedQuoteID string `json:"selected_quote_id,omitempty"`
+	IntentID        string        `json:"intent_id"`
+	Status          string        `json:"status"`
+	SelectedQuoteID string        `json:"selected_quote_id,omitempty"`
+	Items           []intent.Item `json:"items"`
+	Category        string        `json:"category,omitempty"`
+	MaxTotalMinor   int64         `json:"max_total_minor_units,omitempty"`
+	Currency        string        `json:"currency,omitempty"`
+	CreatedAt       string        `json:"created_at"`
 }
 
 func toIntentResponse(pi *intent.PurchaseIntent) intentResponse {
-	return intentResponse{IntentID: pi.ID, Status: string(pi.Status), SelectedQuoteID: pi.SelectedQuoteID}
+	return intentResponse{
+		IntentID: pi.ID, Status: string(pi.Status), SelectedQuoteID: pi.SelectedQuoteID,
+		Items: pi.Items, Category: pi.Constraints.Category, MaxTotalMinor: pi.Constraints.MaxTotalMinorUnits,
+		Currency: pi.Constraints.Currency, CreatedAt: pi.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+	}
 }
 
 func (a *API) createIntent(w http.ResponseWriter, r *http.Request) {

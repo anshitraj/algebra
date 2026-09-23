@@ -7,23 +7,31 @@ package wiring
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/project-algebra/algebra/connectors/websearch"
 	"github.com/project-algebra/algebra/internal/app"
+	"github.com/project-algebra/algebra/internal/domain/billing"
 	"github.com/project-algebra/algebra/internal/domain/confidential"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
+	"github.com/project-algebra/algebra/internal/domain/paymentprovider"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/platform/config"
+	"github.com/project-algebra/algebra/internal/platform/identity"
 	"github.com/project-algebra/algebra/internal/platform/postgres"
 	redisplatform "github.com/project-algebra/algebra/internal/platform/redis"
 	"github.com/project-algebra/algebra/internal/platform/resilience"
 	"github.com/project-algebra/algebra/policy"
 	"github.com/project-algebra/algebra/providers/arcium"
+	"github.com/project-algebra/algebra/providers/paymentdemo"
+	"github.com/project-algebra/algebra/providers/razorpay"
 	"github.com/project-algebra/algebra/providers/vault"
 )
 
@@ -50,6 +58,38 @@ type Bundle struct {
 	Connectors        *app.ConnectorRegistry
 	Idempotency       app.IdempotencyStore
 	Audit             *postgres.AuditRepo
+
+	CommerceProfiles   *postgres.CommerceProfileRepo
+	CommerceProfileSvc *app.CommerceProfileService
+
+	// --- Human accounts for the first-party web app (internal/domain/account) ---
+	Billing    *app.BillingService
+	Accounts   *app.AccountService
+	Activity   *app.ActivityService
+	Onboarding *app.OnboardingService
+	// OAuthProviders holds only the providers with credentials configured,
+	// keyed by name ("google", "github").
+	OAuthProviders map[string]identity.Provider
+	AuthConfig     config.AuthConfig
+	// OAuthStateKey signs the short-lived OAuth state/PKCE cookie. Derived
+	// from the master key, never used for anything else.
+	OAuthStateKey []byte
+
+	// --- B2B agentic-payments infrastructure (see internal/domain/tenant) ---
+	Tenants          *postgres.TenantRepo
+	TenantSvc        *app.TenantService
+	PolicySets       *postgres.PolicySetRepo
+	PolicySetSvc     *app.PolicySetService
+	PaymentIntents   *postgres.PaymentIntentRepo
+	PaymentIntentSvc *app.PaymentIntentService
+	WebhookEndpoints *postgres.WebhookEndpointRepo
+	WebhookDispatch  *app.WebhookDispatchService
+	// PaymentProvider is the only payment rail actually wired live in this
+	// build — providers/paymentdemo.Provider, deterministic and in-memory.
+	// Real rails (Visa Intelligent Commerce, Mastercard Agent Pay, ...) are
+	// a registration here once real credentials exist, not a rewrite.
+	PaymentProvider    paymentprovider.Provider
+	CapabilityResolver *app.PaymentCapabilityResolver
 
 	// Redis is nil if REDIS_ADDR was unset or unreachable at startup —
 	// every consumer (RateLimiter, Locker below) degrades gracefully when
@@ -106,6 +146,11 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	idempotency := postgres.NewIdempotencyRepo(db)
 	privacyRepo := postgres.NewPrivacyProfileRepo(db)
 	users := postgres.NewUserRepo(db)
+	tenants := postgres.NewTenantRepo(db)
+	policySets := postgres.NewPolicySetRepo(db)
+	paymentIntents := postgres.NewPaymentIntentRepo(db)
+	webhookEndpoints := postgres.NewWebhookEndpointRepo(db)
+	commerceProfiles := postgres.NewCommerceProfileRepo(db)
 
 	connectors, err := buildConnectors(cfg.Merchants, encryptor)
 	if err != nil {
@@ -132,7 +177,16 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	// returns ErrNotImplemented) unless both env vars are set — SetWebSearcher
 	// is simply never called otherwise, and DiscoveryService.SearchWeb's nil
 	// check is what reports that honestly.
-	if cfg.GoogleSearchAPIKey != "" && cfg.GoogleSearchEngineID != "" {
+	// Gemini with Google Search grounding is preferred: live results with
+	// prices, on the same key the agent already uses. Custom Search remains
+	// for deployments that have it (Google closed it to new customers).
+	switch {
+	case cfg.GeminiAPIKey != "":
+		discoverySvc.SetWebSearcher(websearch.NewGemini(websearch.GeminiConfig{
+			APIKey: cfg.GeminiAPIKey,
+			Model:  cfg.GeminiSearchModel,
+		}))
+	case cfg.GoogleSearchAPIKey != "" && cfg.GoogleSearchEngineID != "":
 		discoverySvc.SetWebSearcher(websearch.New(websearch.Config{
 			APIKey:         cfg.GoogleSearchAPIKey,
 			SearchEngineID: cfg.GoogleSearchEngineID,
@@ -140,7 +194,7 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	}
 	quoteSvc := app.NewQuoteService(intents, agents, quotes, connectors)
 	policySvc := app.NewPolicyService(intents, agents, quotes, decisions, approvals, ledger, policyProvider, auditRepo, cfg.ApprovalTTL)
-	approvalSvc := app.NewApprovalService(intents, approvals, quoteSvc, auditRepo)
+	approvalSvc := app.NewApprovalService(intents, paymentIntents, approvals, quoteSvc, auditRepo)
 	orderSvc := app.NewOrderService(intents, agents, approvals, orders, quoteSvc, connectors, policyProvider, ledger, auditRepo, cfg.QuoteAmountToleranceMinorUnits)
 	// The privacy resolver is what turns "shipping:home" into a real
 	// address, once, inside a checkout call — without this line the whole
@@ -152,9 +206,57 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	integratorSvc := app.NewIntegratorService(integrators)
 	transactionPolicySvc := app.NewTransactionPolicyService(integrators, auditRepo)
 	userSvc := app.NewUserService(users)
+	commerceProfileSvc := app.NewCommerceProfileService(commerceProfiles, agents)
+
+	var mailer app.Mailer = identity.LogMailer{Logger: slog.Default()}
+	if cfg.Auth.ResendAPIKey != "" {
+		mailer = identity.NewResendMailer(cfg.Auth.ResendAPIKey, cfg.Auth.EmailFrom)
+	}
+	accountSvc := app.NewAccountService(postgres.NewAccountRepo(db), agentSvc, agents, encryptor, mailer, postgres.NewGuardrailRepo(db), cfg.Auth.SessionTTL)
+	// Every policy evaluation — at request-purchase and again at payment
+	// time — uses the user's own guardrails when they've set any.
+	policySvc.SetUserRules(accountSvc)
+	orderSvc.SetUserRules(accountSvc)
+	activitySvc := app.NewActivityService(postgres.NewActivityRepo(db), ledger)
+
+	// Billing for Algebra's own plans. No keys → no gateway: everyone stays
+	// on the free plan and checkout reports "not configured".
+	var gateway billing.Gateway
+	if cfg.Billing.RazorpayKeyID != "" && cfg.Billing.RazorpayKeySecret != "" {
+		gateway = razorpay.Gateway{Client: razorpay.New(razorpay.Config{
+			KeyID: cfg.Billing.RazorpayKeyID, KeySecret: cfg.Billing.RazorpayKeySecret,
+			WebhookSecret: cfg.Billing.RazorpayWebhookSecret,
+		})}
+	}
+	billingSvc := app.NewBillingService(postgres.NewBillingRepo(db), gateway, app.BillingConfig{
+		GrowthPlanID: cfg.Billing.GrowthPlanID, GrowthAmountMinor: cfg.Billing.GrowthPriceMinor, Currency: "INR",
+	})
+	orderSvc.SetExecutionGate(billingSvc)
+	onboardingSvc := app.NewOnboardingService(accountSvc, commerceProfileSvc, privacyResolver)
+	oauthProviders := map[string]identity.Provider{}
+	if cfg.Auth.GoogleClientID != "" && cfg.Auth.GoogleClientSecret != "" {
+		oauthProviders["google"] = identity.NewGoogle(cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret)
+	}
+	if cfg.Auth.GitHubClientID != "" && cfg.Auth.GitHubClientSecret != "" {
+		oauthProviders["github"] = identity.NewGitHub(cfg.Auth.GitHubClientID, cfg.Auth.GitHubClientSecret)
+	}
+	stateMAC := hmac.New(sha256.New, masterKey)
+	stateMAC.Write([]byte("algebra:oauth-state:v1"))
+	oauthStateKey := stateMAC.Sum(nil)
 	webhookSvc := app.NewWebhookService(postgres.NewWebhookRepo(db), auditRepo, envWebhookSecret)
 	auditSvc := app.NewAuditService(auditRepo, agents)
 	confidentialProvider := arcium.NewLocalEncryptedProvider(encryptor)
+
+	// B2B agentic-payments infrastructure. paymentdemo.Provider is the only
+	// payment rail actually wired live in this build — see PaymentProvider's
+	// doc comment on Bundle.
+	tenantSvc := app.NewTenantService(tenants)
+	policySetSvc := app.NewPolicySetService(policySets)
+	webhookDispatchSvc := app.NewWebhookDispatchService(webhookEndpoints)
+	var demoProvider paymentprovider.Provider = paymentdemo.New()
+	paymentIntentSvc := app.NewPaymentIntentService(paymentIntents, agents, users, approvals, policySetSvc, demoProvider, auditRepo, cfg.ApprovalTTL)
+	paymentIntentSvc.SetWebhookDispatcher(webhookDispatchSvc)
+	capabilityResolver := app.NewPaymentCapabilityResolver(demoProvider)
 
 	// Redis is optional (mandate §35) — a missing or unreachable REDIS_ADDR
 	// degrades to "no rate limiting, no fast-fail lock" rather than
@@ -164,12 +266,19 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	var limiter app.RateLimiter
 	if cfg.RedisAddr != "" {
 		rc, err := redisplatform.Connect(ctx, cfg.RedisAddr)
+		if err != nil && cfg.IsProduction() {
+			db.Close()
+			return nil, fmt.Errorf("wiring: Redis unavailable at %q (required in production): %w", cfg.RedisAddr, err)
+		}
 		if err != nil {
 			log.Printf("wiring: Redis unavailable at %q, continuing without rate limiting/locks: %v", cfg.RedisAddr, err)
 		} else {
 			redisClient = rc
 			limiter = rc
 			orderSvc.SetLocker(rc)
+			// Web search costs money per query — don't pay twice for the
+			// same product within a few minutes.
+			discoverySvc.SetSearchCache(rc, cfg.WebSearchCacheTTL)
 		}
 	}
 
@@ -178,8 +287,17 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 		Users: userSvc, Intents: intentSvc, Discovery: discoverySvc, Quotes: quoteSvc,
 		Policy: policySvc, Approvals: approvalSvc, Orders: orderSvc, Payments: paymentSvc,
 		Privacy: privacyResolver, Connectors: connectors, Idempotency: idempotency, Audit: auditRepo,
+		CommerceProfiles: commerceProfiles, CommerceProfileSvc: commerceProfileSvc,
+		Billing: billingSvc, Accounts: accountSvc, Activity: activitySvc, Onboarding: onboardingSvc, OAuthProviders: oauthProviders,
+		AuthConfig: cfg.Auth, OAuthStateKey: oauthStateKey,
 		Redis: redisClient, Limiter: limiter,
 		Webhooks: webhookSvc, AuditSvc: auditSvc, Confidential: confidentialProvider,
+
+		Tenants: tenants, TenantSvc: tenantSvc,
+		PolicySets: policySets, PolicySetSvc: policySetSvc,
+		PaymentIntents: paymentIntents, PaymentIntentSvc: paymentIntentSvc,
+		WebhookEndpoints: webhookEndpoints, WebhookDispatch: webhookDispatchSvc,
+		PaymentProvider: demoProvider, CapabilityResolver: capabilityResolver,
 	}, nil
 }
 

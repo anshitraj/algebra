@@ -27,12 +27,29 @@ const (
 	PermOrdersRead           Permission = "orders.read"
 	PermProfilesRead         Permission = "profiles.read"
 	PermPolicyRead           Permission = "policy.read"
+
+	// PermPaymentsCreateIntent/PermPaymentsExecute scope the
+	// AgenticPaymentIntent flow (internal/domain/paymentintent) — kept
+	// distinct from the Shopping.* permissions above (which scope the
+	// commerce/discovery flow, internal/domain/intent) so a tenant's agent
+	// can be granted one without implicitly getting the other.
+	PermPaymentsCreateIntent Permission = "payments.create_intent"
+	PermPaymentsExecute      Permission = "payments.execute"
+
+	// PermProfilesWrite scopes writing to a user's CommerceProfile
+	// (internal/domain/commerceprofile) — a genuinely new agent capability,
+	// kept separate from the read-only PermProfilesRead above. The
+	// existing ShippingProfile/BillingProfile write path (StoreShipping/
+	// StoreBilling) stays human-only regardless of this permission; it has
+	// no MCP/agent path at all.
+	PermProfilesWrite Permission = "profiles.write"
 )
 
 // AllPermissions is used for validation (rejecting unknown scopes on grant).
 var AllPermissions = []Permission{
 	PermShoppingRead, PermShoppingCreateIntent, PermShoppingExecute,
 	PermPaymentsRequest, PermOrdersRead, PermProfilesRead, PermPolicyRead,
+	PermPaymentsCreateIntent, PermPaymentsExecute, PermProfilesWrite,
 }
 
 func (p Permission) Valid() bool {

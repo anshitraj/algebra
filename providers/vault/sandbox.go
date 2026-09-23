@@ -48,6 +48,7 @@ func (p *SandboxProvider) Tokenize(_ context.Context, req payment.TokenizeReques
 		UserID:           req.UserID,
 		Alias:            req.Alias,
 		Type:             payment.SourceCard,
+		ProviderMode:     p.Mode(),
 		ProviderTokenRef: "sandbox_tok_" + uuid.NewString(),
 		Network:          "visa",
 		Last4:            last4,

@@ -24,7 +24,7 @@ func NewQuoteService(intents IntentStore, agents AgentStore, quotes QuoteStore, 
 }
 
 func (s *QuoteService) GetQuotes(ctx context.Context, agentID, intentID string) ([]*quote.CheckoutQuote, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
+	if _, _, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingRead); err != nil {
 		return nil, err
 	}
 	return s.quotes.ListByIntent(ctx, intentID)
@@ -35,10 +35,7 @@ func (s *QuoteService) GetQuotes(ctx context.Context, agentID, intentID string) 
 // PolicyService.EvaluateAndTransition (commerce.request_purchase), so an
 // agent can compare quotes without triggering policy evaluation each time.
 func (s *QuoteService) SelectQuote(ctx context.Context, agentID, intentID, quoteID string) error {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
-		return err
-	}
-	pi, err := s.intents.Get(ctx, intentID)
+	_, pi, err := requireOwnedIntent(ctx, s.agents, s.intents, agentID, intentID, agentpkg.PermShoppingRead)
 	if err != nil {
 		return err
 	}

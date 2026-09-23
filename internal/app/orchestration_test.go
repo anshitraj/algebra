@@ -26,18 +26,19 @@ import (
 // binding, the idempotency wrapper, the execute-time policy re-check — be
 // exercised exactly as cmd/api and cmd/mcp exercise it, without Postgres.
 type harness struct {
-	agents        *fakeAgentStore
-	intents       *fakeIntentStore
-	quotes        *fakeQuoteStore
-	decisions     *fakePolicyDecisionStore
-	approvals     *fakeApprovalStore
-	orders        *fakeOrderStore
-	ledger        *fakeSpendLedger
-	idempotency   *fakeIdempotencyStore
-	audit         *fakeAuditLogger
-	connectors    *ConnectorRegistry
-	mockConnector *mockconnector.Connector
-	privacyStore  *fakePrivacyStore
+	agents         *fakeAgentStore
+	intents        *fakeIntentStore
+	paymentIntents *fakePaymentIntentStore
+	quotes         *fakeQuoteStore
+	decisions      *fakePolicyDecisionStore
+	approvals      *fakeApprovalStore
+	orders         *fakeOrderStore
+	ledger         *fakeSpendLedger
+	idempotency    *fakeIdempotencyStore
+	audit          *fakeAuditLogger
+	connectors     *ConnectorRegistry
+	mockConnector  *mockconnector.Connector
+	privacyStore   *fakePrivacyStore
 
 	PrivacySvc *privacy.Resolver
 	IntentSvc  *IntentService
@@ -50,7 +51,7 @@ type harness struct {
 
 func newHarness(provider policy.Provider) *harness {
 	h := &harness{
-		agents: newFakeAgentStore(), intents: newFakeIntentStore(), quotes: newFakeQuoteStore(),
+		agents: newFakeAgentStore(), intents: newFakeIntentStore(), paymentIntents: newFakePaymentIntentStore(), quotes: newFakeQuoteStore(),
 		decisions: newFakePolicyDecisionStore(), approvals: newFakeApprovalStore(), orders: newFakeOrderStore(),
 		ledger: &fakeSpendLedger{}, idempotency: newFakeIdempotencyStore(), audit: newFakeAuditLogger(),
 		connectors: NewConnectorRegistry(),
@@ -76,7 +77,7 @@ func newHarness(provider policy.Provider) *harness {
 	h.Discovery = NewDiscoveryService(h.intents, h.agents, h.quotes, h.connectors, h.audit, 5*time.Minute)
 	h.QuoteSvc = NewQuoteService(h.intents, h.agents, h.quotes, h.connectors)
 	h.PolicySvc = NewPolicyService(h.intents, h.agents, h.quotes, h.decisions, h.approvals, h.ledger, provider, h.audit, 15*time.Minute)
-	h.Approvals = NewApprovalService(h.intents, h.approvals, h.QuoteSvc, h.audit)
+	h.Approvals = NewApprovalService(h.intents, h.paymentIntents, h.approvals, h.QuoteSvc, h.audit)
 	h.Orders = NewOrderService(h.intents, h.agents, h.approvals, h.orders, h.QuoteSvc, h.connectors, provider, h.ledger, h.audit, 500)
 	h.Orders.SetPrivacyResolver(h.PrivacySvc)
 	return h

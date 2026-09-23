@@ -45,7 +45,7 @@ func requireBundle(t *testing.T) *wiring.Bundle {
 func mustBootstrapUserAndAgent(t *testing.T, b *wiring.Bundle) (userID, agentID string) {
 	t.Helper()
 	ctx := context.Background()
-	user, err := b.Users.Create(ctx, "e2e-"+uuid.NewString()+"@example.test")
+	user, err := b.Users.Create(ctx, "e2e-"+uuid.NewString()+"@example.test", "")
 	if err != nil {
 		t.Fatalf("creating user: %v", err)
 	}

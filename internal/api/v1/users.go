@@ -11,17 +11,25 @@ type createUserResponse struct {
 	Email  string `json:"email"`
 }
 
-// createUser is a dev-only bootstrap endpoint — see docs/LOCAL_DEVELOPMENT.md.
-// There is no session system yet to authenticate a signup against (no OIDC
-// provider configured in this environment), so this exists purely so
-// agents and payment sources have a real users(id) row to reference.
+// createUser provisions an end user for a tenant integration (tenant bearer
+// token required). People signing up for Algebra's own web app use
+// POST /api/v1/auth/signup (or Google/GitHub) instead. With
+// ALGEBRA_DEV_AUTH=true, an unauthenticated call still creates an unscoped
+// user, for local scripts written before accounts existed.
 func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, err)
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
 		return
 	}
-	user, err := a.b.Users.Create(r.Context(), req.Email)
+	var tenantID string
+	if t, err := a.resolveTenant(r); err == nil {
+		tenantID = t.ID
+	} else if !a.b.AuthConfig.DevHeaderAuth {
+		writeJSON(w, http.StatusUnauthorized, errorBody{Error: "a tenant token is required — people sign up via POST /api/v1/auth/signup"})
+		return
+	}
+	user, err := a.b.Users.Create(r.Context(), req.Email, tenantID)
 	if err != nil {
 		writeError(w, err)
 		return

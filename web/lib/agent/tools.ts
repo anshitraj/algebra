@@ -44,8 +44,8 @@ export const AGENT_TOOLS: AgentTool[] = [
         max_total_minor_units: {
           type: "integer",
           description:
-            "Budget ceiling in minor currency units (paise for INR — ₹400 = 40000). Omit for no explicit cap; " +
-            "policy's own hard cap still applies.",
+            "Budget ceiling in minor currency units (paise for INR — ₹400 = 40000). Use the user's stated budget; " +
+            "if they gave none, omit it and their per-purchase cap is used. Quotes above it are rejected.",
         },
         currency: { type: "string", description: "ISO currency code. Defaults to INR." },
         category: {
@@ -54,8 +54,41 @@ export const AGENT_TOOLS: AgentTool[] = [
         },
         payment_profile: { type: "string", description: "Defaults to 'payment:personal'." },
         delivery_profile: { type: "string", description: "Defaults to 'shipping:home'." },
+        preferred_merchants: {
+          type: "array",
+          items: { type: "string" },
+          description: "Connector names to try first, from the user's profile (e.g. 'swiggy_instamart', 'zepto').",
+        },
       },
       required: ["items"],
+    },
+  },
+  {
+    name: "search_products",
+    description:
+      "Look up products and prices across every connected store WITHOUT starting a purchase. Use it when the user " +
+      "is browsing or comparing, or to check availability before create_purchase_intent. Stores that can't be " +
+      "searched come back with a handoff_url for the user to open.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "Free-text product query, e.g. 'coke zero 300ml'." } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "web_search",
+    description:
+      "Live Google search across Indian online stores (Blinkit, Zepto, Instamart, BigBasket, Amazon, Flipkart, ...). " +
+      "Returns real listings: title, variant (in snippet), store, the price the result showed (price_minor_units, " +
+      "paise) and a link. Use it whenever the user wants to see options, compare prices or sizes, or when connected " +
+      "stores return only handoff links. These prices are indicative, not quotes — Algebra can't check out through " +
+      "these links; the user buys there themselves, or you use create_purchase_intent for a connected store.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Product to look for, e.g. 'Coke Zero' or 'Coke Zero 750ml'." },
+      },
+      required: ["query"],
     },
   },
   {
@@ -112,5 +145,34 @@ export const AGENT_TOOLS: AgentTool[] = [
     name: "cancel_intent",
     description: "Cancel a purchase intent that hasn't completed yet.",
     parameters: { type: "object", properties: { ...intentIdParam }, required: ["intent_id"] },
+  },
+  {
+    name: "get_commerce_profile",
+    description:
+      "Get the user's known shopping preferences and default shipping/payment aliases. The current profile is " +
+      "already given to you in context at the start of this conversation — call this only if you need to " +
+      "double-check the latest state, e.g. after a long conversation or after saving an update.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "update_commerce_preferences",
+    description:
+      "Save a stable preference the user just stated (their usual size, a color they prefer, a dietary " +
+      "restriction, ...) under one category, so it doesn't need to be asked again next time. Merges into " +
+      "whatever is already known for that category — does not replace the whole profile. The current profile " +
+      "is already given to you in context at the start of this conversation; call this only when the user " +
+      "states something new or different from what you already know.",
+    parameters: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "e.g. 'clothing', 'shopping', 'food'." },
+        attributes: {
+          type: "object",
+          description: "Flat key-value attributes to merge in, e.g. {\"usual_size\": \"L\"}.",
+          properties: {},
+        },
+      },
+      required: ["category", "attributes"],
+    },
   },
 ];

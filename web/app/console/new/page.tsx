@@ -1,148 +1,193 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "motion/react";
 import * as api from "@/lib/api-client";
-import { trackIntent } from "@/lib/intent-history";
-import { Button, Field, Input } from "@/components/console/ui";
+import type { CommerceProfile, GuardrailsResponse } from "@/lib/types";
+import { IconPlus, IconX, Spinner } from "@/components/icons";
+import { ErrorNote, PageHeader, rupees } from "@/components/console/ui";
 
-type ItemRow = { query: string; quantity: number };
+type ItemRow = { id: number; query: string; quantity: number };
 
-const EXAMPLE_ITEMS: ItemRow[] = [
-  { query: "Coke Zero", quantity: 1 },
-  { query: "chips", quantity: 1 },
-];
+const CATEGORIES = [
+  ["groceries", "Groceries"],
+  ["food_delivery", "Food delivery"],
+  ["pharmacy", "Pharmacy"],
+  ["electronics", "Electronics"],
+  ["fashion", "Fashion"],
+  ["home", "Home & kitchen"],
+  ["beauty", "Beauty & care"],
+  ["subscriptions", "Subscriptions"],
+  ["gift_cards", "Gift cards"],
+] as const;
 
-export default function NewIntentPage() {
+const field =
+  "h-11 w-full rounded-xl border border-border-strong bg-surface px-3.5 text-[0.95rem] text-foreground placeholder:text-muted/80 focus-visible:border-primary focus-visible:outline-none";
+
+
+export default function OrderByHandPage() {
   const router = useRouter();
-  const [items, setItems] = useState<ItemRow[]>(EXAMPLE_ITEMS);
-  const [maxTotal, setMaxTotal] = useState("400");
+  const nextId = useRef(2);
+  const [items, setItems] = useState<ItemRow[]>([{ id: 1, query: "", quantity: 1 }]);
+  const [budget, setBudget] = useState("");
   const [category, setCategory] = useState("groceries");
-  const [paymentProfile, setPaymentProfile] = useState("payment:personal");
-  const [deliveryProfile, setDeliveryProfile] = useState("shipping:home");
+  const [profile, setProfile] = useState<CommerceProfile | null>(null);
+  const [guardrails, setGuardrails] = useState<GuardrailsResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function updateItem(i: number, patch: Partial<ItemRow>) {
-    setItems((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  useEffect(() => {
+    api.getCommerceProfile().then(setProfile).catch(() => setProfile(null));
+    api.getGuardrails().then(setGuardrails).catch(() => setGuardrails(null));
+  }, []);
+
+  function update(id: number, patch: Partial<ItemRow>) {
+    setItems((rows) => rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const valid = items.filter((it) => it.query.trim()).map((it) => ({ query: it.query.trim(), quantity: Math.max(1, it.quantity) }));
+    if (valid.length === 0) {
+      setError("Add at least one item.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const validItems = items.filter((it) => it.query.trim());
-      if (validItems.length === 0) throw new Error("Add at least one item.");
-
+      const preferred = (profile?.preferences?.shopping as { preferred_merchants?: string[] } | undefined)?.preferred_merchants;
       const intent = await api.createIntent(
-        validItems,
+        valid,
         {
-          max_total_minor_units: maxTotal ? Math.round(parseFloat(maxTotal) * 100) : undefined,
+          // Every intent needs a ceiling; blank means "up to my per-purchase cap".
+          max_total_minor_units: budget ? Math.round(Number(budget) * 100) : guardrails?.max_per_purchase_minor_units ?? 200000,
           currency: "INR",
-          category: category || undefined,
-          payment_profile: paymentProfile || undefined,
-          delivery_profile: deliveryProfile || undefined,
+          category,
+          payment_profile: profile?.default_payment_alias || "payment:personal",
+          delivery_profile: profile?.default_shipping_alias || "shipping:home",
+          preferred_merchants: preferred?.length ? preferred : undefined,
         },
         crypto.randomUUID()
       );
-
-      trackIntent({
-        id: intent.intent_id,
-        summary: validItems.map((it) => `${it.quantity}× ${it.query}`).join(", "),
-        createdAt: new Date().toISOString(),
-      });
-
+      // Go straight to comparing prices — creating is never the goal.
+      await api.discover(intent.intent_id).catch(() => undefined);
       router.push(`/console/intents/${intent.intent_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create intent");
+      setError(err instanceof Error ? err.message : "Couldn't start the order");
       setBusy(false);
     }
   }
 
   return (
-    <div className="mx-auto max-w-xl">
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
-        New purchase intent
-      </h1>
-      <p className="mt-1.5 text-sm text-muted">
-        Turns into a <code className="font-mono text-xs">PurchaseIntent</code>{" "}
-        via <code className="font-mono text-xs">POST /api/v1/intents</code>.
-        The mock connector understands groceries — Coke Zero, chips, pasta,
-        tomato sauce, garlic bread, parmesan — and a ₹500 gift card, which
-        policy blocks by category.
-      </p>
+    <div className="mx-auto max-w-2xl">
+      <PageHeader
+        title="Order by hand"
+        description="List what you want. Algebra compares every connected store, you pick the offer, and your guardrails check it before anything is bought."
+      />
 
-      <form onSubmit={handleSubmit} className="mt-8 space-y-6">
-        <div>
-          <span className="text-sm font-medium text-foreground">Items</span>
-          <div className="mt-2 space-y-2">
-            {items.map((row, i) => (
-              <div key={i} className="flex gap-2">
-                <Input
-                  value={row.query}
-                  onChange={(e) => updateItem(i, { query: e.target.value })}
-                  placeholder="e.g. Coke Zero"
-                  className="flex-1"
-                />
-                <Input
-                  type="number"
-                  min={1}
-                  value={row.quantity}
-                  onChange={(e) => updateItem(i, { quantity: Number(e.target.value) || 1 })}
-                  className="w-20"
-                />
-                {items.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => setItems((rows) => rows.filter((_, idx) => idx !== i))}
-                    className="px-2 text-sm text-muted hover:text-danger"
-                    aria-label="Remove item"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+      <form onSubmit={handleSubmit} className="mt-10 space-y-8">
+        <fieldset>
+          <legend className="text-[0.95rem] font-semibold text-foreground">Items</legend>
+          <ul className="mt-3 space-y-2.5">
+            <AnimatePresence initial={false}>
+              {items.map((row, i) => (
+                <motion.li
+                  key={row.id}
+                  layout
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="flex items-center gap-2.5"
+                >
+                  <label className="sr-only" htmlFor={`item-${row.id}`}>
+                    Item {i + 1}
+                  </label>
+                  <input
+                    id={`item-${row.id}`}
+                    value={row.query}
+                    onChange={(e) => update(row.id, { query: e.target.value })}
+                    placeholder={i === 0 ? "e.g. Coke Zero 750ml" : "Another item"}
+                    autoFocus={i === items.length - 1 && i > 0}
+                    className={`${field} min-w-0 flex-1`}
+                  />
+                  <div className="flex h-11 shrink-0 items-center rounded-xl border border-border-strong bg-surface" role="group" aria-label={`Quantity for item ${i + 1}`}>
+                    <button type="button" onClick={() => update(row.id, { quantity: Math.max(1, row.quantity - 1) })} className="h-full w-9 text-muted hover:text-foreground" aria-label="Fewer">
+                      −
+                    </button>
+                    <span className="w-7 text-center font-mono text-sm text-foreground tabular-nums">{row.quantity}</span>
+                    <button type="button" onClick={() => update(row.id, { quantity: Math.min(99, row.quantity + 1) })} className="h-full w-9 text-muted hover:text-foreground" aria-label="More">
+                      +
+                    </button>
+                  </div>
+                  {items.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setItems((rows) => rows.filter((r) => r.id !== row.id))}
+                      className="flex h-11 w-9 shrink-0 items-center justify-center rounded-xl text-muted hover:bg-danger-tint hover:text-danger"
+                      aria-label={`Remove item ${i + 1}`}
+                    >
+                      <IconX size={15} />
+                    </button>
+                  )}
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
           <button
             type="button"
-            onClick={() => setItems((rows) => [...rows, { query: "", quantity: 1 }])}
-            className="mt-2 text-sm font-medium text-primary hover:underline"
+            onClick={() => setItems((rows) => [...rows, { id: nextId.current++, query: "", quantity: 1 }])}
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
           >
-            + Add item
+            <IconPlus size={15} /> Add item
           </button>
+        </fieldset>
+
+        <div className="grid gap-6 sm:grid-cols-2">
+          <label className="block">
+            <span className="text-[0.95rem] font-semibold text-foreground">Budget</span>
+            <span className="mt-1 block text-sm text-muted">
+              {guardrails ? `Blank = up to your ${rupees(guardrails.max_per_purchase_minor_units)} per-purchase cap.` : "Offers above it are skipped."}
+            </span>
+            <span className="mt-2.5 flex h-11 items-center rounded-xl border border-border-strong bg-surface px-3.5 focus-within:border-primary">
+              <span className="text-muted">₹</span>
+              <input
+                inputMode="numeric"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value.replace(/[^\d]/g, ""))}
+                placeholder={guardrails ? String(guardrails.max_per_purchase_minor_units / 100) : "2000"}
+                className="ml-1.5 w-full bg-transparent font-mono text-[0.95rem] text-foreground placeholder:font-sans placeholder:text-muted/80 focus:outline-none"
+              />
+            </span>
+          </label>
+          <label className="block">
+            <span className="text-[0.95rem] font-semibold text-foreground">Category</span>
+            <span className="mt-1 block text-sm text-muted">Your never-buy list is checked against this.</span>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} className={`${field} mt-2.5`}>
+              {CATEGORIES.map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
-        <Field label="Budget (₹)" hint="Constraints.MaxTotalMinorUnits — over this, or over the ₹2,000 hard cap, the intent is denied.">
-          <Input
-            type="number"
-            value={maxTotal}
-            onChange={(e) => setMaxTotal(e.target.value)}
-            min={0}
-          />
-        </Field>
+        <p className="text-sm text-muted">
+          Delivers to <span className="text-foreground">{profile?.default_shipping_alias === "shipping:home" ? "Home" : "your default address"}</span>, paid with{" "}
+          <span className="text-foreground">your default payment method</span>. Change these under Profile.
+        </p>
 
-        <Field label="Category" hint='Try "gift_cards" with the ₹500 Gift Card item to see a DENY.'>
-          <Input value={category} onChange={(e) => setCategory(e.target.value)} />
-        </Field>
+        {error && <ErrorNote>{error}</ErrorNote>}
 
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Payment profile">
-            <Input value={paymentProfile} onChange={(e) => setPaymentProfile(e.target.value)} />
-          </Field>
-          <Field label="Delivery profile">
-            <Input value={deliveryProfile} onChange={(e) => setDeliveryProfile(e.target.value)} />
-          </Field>
-        </div>
-
-        {error && (
-          <p className="rounded-lg bg-danger-tint px-3 py-2 text-sm text-danger">{error}</p>
-        )}
-
-        <Button type="submit" disabled={busy} className="w-full">
-          {busy ? "Creating…" : "Create intent"}
-        </Button>
+        <button
+          type="submit"
+          disabled={busy}
+          className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary text-[0.95rem] font-medium text-primary-tint transition-[opacity,transform] hover:opacity-95 active:scale-[0.99] disabled:opacity-60"
+        >
+          {busy && <Spinner size={15} />}
+          {busy ? "Comparing stores…" : "Compare prices"}
+        </button>
       </form>
     </div>
   );

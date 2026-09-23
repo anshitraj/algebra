@@ -1,5 +1,6 @@
 import { Nav } from "@/components/nav";
 import { Hero } from "@/components/hero";
+import { GetStarted } from "@/components/get-started";
 import { DashboardSection } from "@/components/dashboard-section";
 import { HowItWorks } from "@/components/how-it-works";
 import { PolicyDimensions } from "@/components/policy-dimensions";
@@ -14,6 +15,7 @@ export default function Home() {
       <Nav />
       <main>
         <Hero />
+        <GetStarted />
         <DashboardSection />
         <HowItWorks />
         <PolicyDimensions />

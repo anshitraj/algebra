@@ -44,7 +44,7 @@ func requireDB(t *testing.T) *DB {
 func mustCreateUser(t *testing.T, db *DB) string {
 	t.Helper()
 	id := "user_" + uuid.NewString()
-	if err := NewUserRepo(db).Create(context.Background(), id, id+"@example.test", time.Now()); err != nil {
+	if err := NewUserRepo(db).Create(context.Background(), id, id+"@example.test", "", time.Now()); err != nil {
 		t.Fatalf("creating test user: %v", err)
 	}
 	return id

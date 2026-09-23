@@ -50,7 +50,7 @@ type addPaymentSourceRequest struct {
 // provider's OWN hosted fields (mandate §21/§42) before this request is
 // ever made. Algebra's backend never sees a PAN here or anywhere else.
 func (a *API) addPaymentSource(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -71,7 +71,7 @@ func (a *API) addPaymentSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) revokePaymentSource(w http.ResponseWriter, r *http.Request) {
-	userID, err := currentUserID(r)
+	userID, err := a.currentUserID(r)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -6,6 +6,8 @@ const columns = [
   {
     heading: "Product",
     links: [
+      { label: "Sign in", href: "/login" },
+      { label: "Create account", href: "/signup" },
       { label: "Console", href: "/console" },
       { label: "Pricing", href: "/pricing" },
       { label: "How it works", href: "/#how-it-works" },
@@ -72,7 +74,7 @@ export function Footer() {
         </div>
 
         <div className="mt-16 flex flex-col gap-3 border-t border-border pt-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
-          <p>Dev-mode identity throughout this console — not a real account system. See docs/LOCAL_DEVELOPMENT.md.</p>
+          <p>Algebra never holds your card number, CVV, wallet key or OTP. Policy runs server-side on every purchase.</p>
           <p>Apache-2.0 licensed.</p>
         </div>
       </Container>

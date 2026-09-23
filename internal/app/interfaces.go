@@ -19,9 +19,12 @@ import (
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/order"
 	"github.com/project-algebra/algebra/internal/domain/payment"
+	"github.com/project-algebra/algebra/internal/domain/paymentintent"
+	"github.com/project-algebra/algebra/internal/domain/policyset"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
 	"github.com/project-algebra/algebra/internal/domain/quote"
 	"github.com/project-algebra/algebra/internal/domain/shared"
+	"github.com/project-algebra/algebra/internal/domain/tenant"
 	"github.com/project-algebra/algebra/internal/domain/websearch"
 	"github.com/project-algebra/algebra/policy"
 )
@@ -64,6 +67,9 @@ type ApprovalStore interface {
 	Create(ctx context.Context, a *approval.Approval) error
 	Get(ctx context.Context, id string) (*approval.Approval, error)
 	GetByIntent(ctx context.Context, intentID string) (*approval.Approval, error)
+	// GetByPaymentIntent is GetByIntent's counterpart for the
+	// AgenticPaymentIntent flow — see approval.Approval's doc comment.
+	GetByPaymentIntent(ctx context.Context, paymentIntentID string) (*approval.Approval, error)
 	Update(ctx context.Context, a *approval.Approval) error
 	// MarkConsumed atomically transitions an approval from APPROVED to
 	// CONSUMED (an UPDATE ... WHERE status = 'APPROVED' in the Postgres
@@ -71,6 +77,41 @@ type ApprovalStore interface {
 	// what makes concurrent execution attempts on the same approval safe —
 	// only one caller ever gets claimed == true (mandate §32).
 	MarkConsumed(ctx context.Context, id string) (claimed bool, err error)
+}
+
+// TenantStore backs TenantService — mints and looks up the B2B root
+// credential a business integration authenticates as. See
+// internal/domain/tenant's package doc.
+type TenantStore interface {
+	GetByTokenHash(ctx context.Context, hash string) (*tenant.Tenant, error)
+	Get(ctx context.Context, id string) (*tenant.Tenant, error)
+	Create(ctx context.Context, t *tenant.Tenant) error
+	Revoke(ctx context.Context, id string, revokedAt time.Time) error
+}
+
+// PolicySetStore backs PolicySetService — persisted, versioned policy.Rules
+// per tenant (and optionally per end user). See internal/domain/policyset.
+type PolicySetStore interface {
+	Create(ctx context.Context, ps *policyset.PolicySet) error
+	GetActive(ctx context.Context, tenantID string, userID *string) (*policyset.PolicySet, error)
+	SupersedeActive(ctx context.Context, tenantID string, userID *string, supersededAt time.Time) error
+}
+
+// PaymentIntentStore backs PaymentIntentService. See
+// internal/domain/paymentintent.
+type PaymentIntentStore interface {
+	Create(ctx context.Context, p *paymentintent.AgenticPaymentIntent) error
+	Get(ctx context.Context, id string) (*paymentintent.AgenticPaymentIntent, error)
+	Update(ctx context.Context, p *paymentintent.AgenticPaymentIntent) error
+	ListByTenant(ctx context.Context, tenantID string, limit int) ([]paymentintent.AgenticPaymentIntent, error)
+}
+
+// WebhookEndpointStore backs WebhookDispatchService — a tenant's own
+// registered outbound-webhook destinations. See
+// internal/domain/tenant.WebhookEndpoint.
+type WebhookEndpointStore interface {
+	Create(ctx context.Context, w *tenant.WebhookEndpoint) error
+	ListActiveByTenant(ctx context.Context, tenantID string) ([]tenant.WebhookEndpoint, error)
 }
 
 type PaymentSourceStore interface {
@@ -142,6 +183,16 @@ type RateLimiter interface {
 // A nil WebSearcher (the default) means the capability is off.
 type WebSearcher interface {
 	Search(ctx context.Context, query string, limit int) ([]websearch.Result, error)
+}
+
+// SearchCache is an optional short-lived cache for web-search results
+// (internal/platform/redis.Client satisfies it). Web search costs money per
+// query and takes seconds; the same product looked up by several users, or
+// twice by one agent, should not pay that twice. A nil cache simply means
+// every search goes out live.
+type SearchCache interface {
+	GetJSON(ctx context.Context, key string, out any) bool
+	SetJSON(ctx context.Context, key string, v any, ttl time.Duration)
 }
 
 // ConnectorRegistry holds every configured MerchantConnector by name. It is

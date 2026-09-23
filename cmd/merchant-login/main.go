@@ -17,6 +17,7 @@
 //	go run ./cmd/merchant-login -merchant zepto
 //	go run ./cmd/merchant-login -merchant swiggy_instamart -alias shipping:home
 //	go run ./cmd/merchant-login -merchant zepto -unlink
+//	go run ./cmd/merchant-login -merchant swiggy_instamart -address 2   # pick a saved address non-interactively (re-uses an existing link)
 package main
 
 import (
@@ -50,6 +51,7 @@ type options struct {
 	manifestDir string
 	unlink      bool
 	timeout     time.Duration
+	address     int
 }
 
 func main() {
@@ -60,6 +62,7 @@ func main() {
 	flag.StringVar(&opts.manifestDir, "manifest-dir", ".data/merchant-tools", "where to write the live tool manifest")
 	flag.BoolVar(&opts.unlink, "unlink", false, "delete the stored session instead of linking")
 	flag.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "how long to wait for you to finish signing in")
+	flag.IntVar(&opts.address, "address", 0, "swiggy_instamart: which saved address (1-based) the alias delivers to; with an existing link, skips signing in again")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -104,6 +107,19 @@ func run(ctx context.Context, opts options, in io.Reader, out io.Writer) error {
 		return nil
 	}
 
+	// Picking an address for an account that's already linked needs no new
+	// sign-in — just the saved session.
+	if opts.merchant == swiggyinstamart.Name && opts.address > 0 {
+		if _, err := store.Load(opts.merchant); err == nil {
+			client, err := remotemcp.NewClient(remotemcp.Config{Merchant: opts.merchant, Endpoint: endpoint, Store: store})
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+			return chooseSwiggyAddress(ctx, client, store, normalizeAlias(opts.alias), opts.address, in, out)
+		}
+	}
+
 	fmt.Fprintf(out, "Linking %s via %s\n", opts.merchant, endpoint)
 	sess, err := remotemcp.Login(ctx, opts.merchant, endpoint, remotemcp.LoginOptions{
 		RedirectURL: opts.redirect,
@@ -142,7 +158,7 @@ func run(ctx context.Context, opts options, in io.Reader, out io.Writer) error {
 		if err := remotemcp.CheckTools(tools, swiggyinstamart.Contract); err != nil {
 			fmt.Fprintf(out, "\nWARNING: the live tools differ from Swiggy's published Instamart reference, so the connector will stay disabled: %v\n", err)
 		}
-		if err := chooseSwiggyAddress(ctx, client, store, normalizeAlias(opts.alias), in, out); err != nil {
+		if err := chooseSwiggyAddress(ctx, client, store, normalizeAlias(opts.alias), opts.address, in, out); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "\nSwiggy Instamart places REAL orders (Cash on Delivery). Swiggy reviews production access to its MCP servers (builders@swiggy.in); enable the connector with ENABLED_MERCHANTS=...,swiggy_instamart once you have it.")
@@ -161,7 +177,7 @@ func normalizeAlias(alias string) string {
 // chooseSwiggyAddress shows the linked account's saved addresses in the
 // user's own terminal and records which one the alias stands for. Only the
 // opaque address ID is stored.
-func chooseSwiggyAddress(ctx context.Context, client *remotemcp.Client, store *remotemcp.FileSessionStore, alias string, in io.Reader, out io.Writer) error {
+func chooseSwiggyAddress(ctx context.Context, client *remotemcp.Client, store *remotemcp.FileSessionStore, alias string, preset int, in io.Reader, out io.Writer) error {
 	addresses, err := swiggyinstamart.SavedAddresses(ctx, client)
 	if err != nil {
 		return fmt.Errorf("listing your saved Swiggy addresses: %w", err)
@@ -177,11 +193,14 @@ func chooseSwiggyAddress(ctx context.Context, client *remotemcp.Client, store *r
 		}
 		fmt.Fprintf(out, "  [%d] %s: %s\n", i+1, label, a.AddressLine)
 	}
-	fmt.Fprint(out, "Number: ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	n, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil || n < 1 || n > len(addresses) {
-		return errors.New("no valid address chosen; the account is linked, but Swiggy Instamart stays disabled until you re-run merchant-login and pick one")
+	n := preset
+	if n == 0 {
+		fmt.Fprint(out, "Number: ")
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		n, _ = strconv.Atoi(strings.TrimSpace(line))
+	}
+	if n < 1 || n > len(addresses) {
+		return fmt.Errorf("no valid address chosen; the account is linked — pick one with: go run ./cmd/merchant-login -merchant %s -address <number>", swiggyinstamart.Name)
 	}
 
 	sess, err := store.Load(swiggyinstamart.Name)

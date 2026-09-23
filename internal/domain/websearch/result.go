@@ -13,4 +13,12 @@ type Result struct {
 	Title   string `json:"title"`
 	Snippet string `json:"snippet"`
 	URL     string `json:"url"`
+
+	// Store and the price fields are set when the hit is a shopping listing
+	// (connectors/websearch.Gemini). The price is what the search result
+	// showed — never a quote: Algebra can't buy through it, and it may
+	// already be stale.
+	Store           string `json:"store,omitempty"`
+	PriceMinorUnits int64  `json:"price_minor_units,omitempty"`
+	Currency        string `json:"currency,omitempty"`
 }

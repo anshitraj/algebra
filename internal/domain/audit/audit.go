@@ -30,9 +30,11 @@ type Event struct {
 	TraceID   string    `json:"trace_id,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 
-	UserID   string `json:"user_id,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
-	IntentID string `json:"intent_id,omitempty"`
+	UserID                 string `json:"user_id,omitempty"`
+	AgentID                string `json:"agent_id,omitempty"`
+	IntentID               string `json:"intent_id,omitempty"`
+	AgenticPaymentIntentID string `json:"agentic_payment_intent_id,omitempty"`
+	TenantID               string `json:"tenant_id,omitempty"`
 
 	Action         string `json:"action"`
 	PreviousState  string `json:"previous_state,omitempty"`
