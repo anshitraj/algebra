@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { resolveProvider } from "@/lib/agent/models";
 import { buildSystemPrompt } from "@/lib/agent/system-prompt";
-import { getAgentToken, getCommerceProfile, getGuardrails, ServerApiError } from "@/lib/agent/server-client";
+import { consumeAgentTurn, getAgentToken, getCommerceProfile, getGuardrails, getPlugins, ServerApiError, type TurnQuota } from "@/lib/agent/server-client";
+import { toolsFor } from "@/lib/agent/tools";
+import { trimHistory } from "@/lib/agent/history";
 import type { AgentEvent } from "@/lib/agent/events";
 
 export const dynamic = "force-dynamic";
@@ -60,15 +62,23 @@ export async function POST(request: Request) {
     );
   }
 
+  // One message = one LLM run plus billed searches; the API holds the daily
+  // count. If the count itself can't be reached, don't block the person.
+  const quota = await consumeAgentTurn(cookie).catch((): TurnQuota => ({ ok: true }));
+  if (!quota.ok) return NextResponse.json({ error: quotaMessage(quota) }, { status: 429 });
+
   // Rebuilt every turn: a preference saved mid-chat or a guardrail edited in
   // another tab takes effect on the very next message.
-  const [profile, guardrails] = await Promise.all([
+  const [profile, guardrails, plugins] = await Promise.all([
     getCommerceProfile(identity).catch(() => null),
     getGuardrails(cookie).catch(() => null),
+    getPlugins(cookie).catch(() => []),
   ]);
-  const systemPrompt = buildSystemPrompt(profile, guardrails);
+  const active = plugins.filter((p) => p.enabled && p.ready);
+  const systemPrompt = buildSystemPrompt(profile, guardrails, identity.mode, active);
+  const tools = toolsFor(new Set(active.map((p) => p.purpose)));
   if (guardrails?.max_per_purchase_minor_units) identity = { ...identity, defaultBudgetMinor: guardrails.max_per_purchase_minor_units };
-  const history = Array.isArray(body.history) ? body.history : [];
+  const history = trimHistory(Array.isArray(body.history) ? body.history : []);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -92,6 +102,7 @@ export async function POST(request: Request) {
           identity,
           emit,
           signal: request.signal,
+          tools,
         });
         emit({ type: "done", reply: result.reply, history: result.history, provider: provider.id, model: provider.model });
       } catch (err) {
@@ -117,6 +128,14 @@ export async function POST(request: Request) {
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+function quotaMessage(q: Extract<TurnQuota, { ok: false }>) {
+  if (q.demo) {
+    return `Demo accounts get ${q.limit} agent messages a day, and this one has used them. Create a free account to keep going.`;
+  }
+  const hours = Math.max(1, Math.ceil(q.retryAfterSeconds / 3600));
+  return `You've used today's ${q.limit} agent messages. You can send more in about ${hours} hour${hours === 1 ? "" : "s"}.`;
 }
 
 function friendlyProviderError(detail: string) {

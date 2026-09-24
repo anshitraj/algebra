@@ -7,10 +7,10 @@
 package v1
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,6 +41,9 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 		origins[o] = true
 	}
 	api := &API{b: b, limiter: limiter, allowedOrigins: origins}
+	if b.AuthConfig.TrustedProxyHops >= 0 {
+		trustedProxyHops = b.AuthConfig.TrustedProxyHops
+	}
 	mux := http.NewServeMux()
 
 	// --- human accounts (first-party web app) ---
@@ -49,6 +52,7 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 	mux.HandleFunc("POST /api/v1/auth/signup", api.signUp)
 	mux.HandleFunc("POST /api/v1/auth/login", api.signIn)
 	mux.HandleFunc("POST /api/v1/auth/logout", api.signOut)
+	mux.HandleFunc("POST /api/v1/auth/demo", api.startDemo)
 	mux.HandleFunc("POST /api/v1/auth/password/forgot", api.forgotPassword)
 	mux.HandleFunc("POST /api/v1/auth/password/reset", api.resetPassword)
 	mux.HandleFunc("POST /api/v1/auth/agent-token", api.agentToken)
@@ -56,6 +60,11 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/callback", api.oauthCallback)
 
 	mux.HandleFunc("GET /api/v1/me", api.getMe)
+	mux.HandleFunc("DELETE /api/v1/me", api.deleteMe)
+	mux.HandleFunc("GET /api/v1/me/export", api.exportMe)
+	mux.HandleFunc("POST /api/v1/me/agent-turns", api.consumeAgentTurn)
+	mux.HandleFunc("GET /api/v1/me/plugins", api.listMyPlugins)
+	mux.HandleFunc("PUT /api/v1/me/plugins/{id}", api.setMyPlugin)
 	mux.HandleFunc("PATCH /api/v1/me", api.updateMe)
 	mux.HandleFunc("GET /api/v1/me/sessions", api.listMySessions)
 	mux.HandleFunc("POST /api/v1/me/sessions/{id}/revoke", api.revokeMySession)
@@ -66,8 +75,10 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 	mux.HandleFunc("GET /api/v1/me/intents", api.listMyIntents)
 	mux.HandleFunc("GET /api/v1/me/approvals", api.listMyApprovals)
 	mux.HandleFunc("GET /api/v1/me/orders", api.listMyOrders)
+	mux.HandleFunc("GET /api/v1/me/orders/{id}", api.getMyOrder)
 
 	mux.HandleFunc("GET /api/v1/billing", api.getBilling)
+	mux.HandleFunc("GET /api/v1/billing/plans", api.getBillingPlans)
 	mux.HandleFunc("POST /api/v1/billing/checkout", api.startCheckout)
 	mux.HandleFunc("POST /api/v1/billing/confirm", api.confirmCheckout)
 	mux.HandleFunc("POST /api/v1/billing/cancel", api.cancelSubscription)
@@ -75,6 +86,8 @@ func NewRouter(b *wiring.Bundle, limiter app.RateLimiter, allowedOrigins []strin
 
 	mux.HandleFunc("GET /api/v1/search", api.searchProducts)
 	mux.HandleFunc("GET /api/v1/web-search", api.webSearch)
+	mux.HandleFunc("GET /api/v1/deals", api.findDeals)
+	mux.HandleFunc("GET /api/v1/community-deals", api.communityDeals)
 
 	mux.HandleFunc("POST /api/v1/users", api.createUser)
 
@@ -228,11 +241,9 @@ func rateLimitKey(r *http.Request) string {
 	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
 		return "session:" + agent.HashToken(c.Value)
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || host == "" {
-		host = r.RemoteAddr
-	}
-	return "ip:" + host
+	// Never RemoteAddr directly: behind the web app's proxy that is one
+	// address for every anonymous visitor, who would all share one bucket.
+	return "ip:" + clientIP(r)
 }
 
 func formatSeconds(d time.Duration) string {
@@ -318,6 +329,25 @@ func (a *API) resolveAgent(r *http.Request) (*agent.Identity, error) {
 }
 
 // unauthenticatedError maps to 401 in writeError.
+// operatorHeader carries ALGEBRA_OPERATOR_TOKEN on operator-only calls.
+const operatorHeader = "X-Algebra-Operator-Token"
+
+// isOperator reports whether the request carries the operator token.
+func (a *API) isOperator(r *http.Request) bool {
+	want, got := a.b.AuthConfig.OperatorToken, r.Header.Get(operatorHeader)
+	return want != "" && got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// requireOperator gates B2B registration (new tenants and integrators mint
+// root credentials). With no operator token configured it stays open in
+// development, for self-serve testing, and is closed in production.
+func (a *API) requireOperator(r *http.Request) error {
+	if a.isOperator(r) || (a.b.AuthConfig.OperatorToken == "" && !a.b.AuthConfig.Production) {
+		return nil
+	}
+	return unauthenticatedError{msg: "operator token required (" + operatorHeader + ")"}
+}
+
 type unauthenticatedError struct{ msg string }
 
 func (e unauthenticatedError) Error() string { return e.msg }
@@ -330,15 +360,15 @@ func (a *API) resolveIntegrator(r *http.Request) (*integrator.Integrator, error)
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		return nil, errors.New("missing or malformed Authorization: Bearer <integrator_token> header")
+		return nil, unauthenticatedError{msg: "missing or malformed Authorization: Bearer <integrator_token> header"}
 	}
 	token := authz[len(prefix):]
 	integ, err := a.b.Integrators.GetByTokenHash(r.Context(), agent.HashToken(token))
 	if err != nil {
-		return nil, errors.New("invalid integrator token")
+		return nil, unauthenticatedError{msg: "invalid integrator token"}
 	}
 	if integ.IsRevoked() {
-		return nil, errors.New("integrator token has been revoked")
+		return nil, unauthenticatedError{msg: "integrator token has been revoked"}
 	}
 	return integ, nil
 }
@@ -351,15 +381,15 @@ func (a *API) resolveTenant(r *http.Request) (*tenant.Tenant, error) {
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		return nil, errors.New("missing or malformed Authorization: Bearer <tenant_token> header")
+		return nil, unauthenticatedError{msg: "missing or malformed Authorization: Bearer <tenant_token> header"}
 	}
 	token := authz[len(prefix):]
 	t, err := a.b.Tenants.GetByTokenHash(r.Context(), agent.HashToken(token))
 	if err != nil {
-		return nil, errors.New("invalid tenant token")
+		return nil, unauthenticatedError{msg: "invalid tenant token"}
 	}
 	if t.IsRevoked() {
-		return nil, errors.New("tenant token has been revoked")
+		return nil, unauthenticatedError{msg: "tenant token has been revoked"}
 	}
 	return t, nil
 }

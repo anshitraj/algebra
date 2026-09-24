@@ -113,6 +113,18 @@ Uses the **Affiliate API**: `GET https://affiliate-api.flipkart.net/affiliate/1.
 - The token is a custom header, so redirects are never followed (net/http would forward it to another host).
 - Product-by-ID lookup isn't wired: its parameter contract isn't in the public reference.
 
+## Deals, offers and bank/card offers (`commerce.find_deals`, `GET /api/v1/deals`)
+
+`DiscoveryService.FindDeals` collects what's discounted for a product. It's informational: nothing is applied to a cart, and **no coupon code is ever returned** — neither store's API publishes codes, and Algebra never scrapes coupon sites, Reddit or merchant pages for them.
+
+| Source | What it gives | How |
+|---|---|---|
+| Flipkart | Published offers + Deals of the Day (category/brand sales, with start/end times) | Affiliate **Offers API**: `GET https://affiliate-api.flipkart.net/affiliate/offers/v1/all/json` (`allOffersList`) and `/dotd/json` (`dotdList`), same `Fk-Affiliate-*` headers. The feed is global, so it's fetched at most every 15 min and matched to the query on content words (promo filler like "flat"/"off" is ignored, so "flat feet" never matches a bedsheet sale). A failed refresh serves the last feed for up to 2 h. |
+| Amazon | Price drops against Amazon's reference price (M.R.P./list/was) and live time-boxed deals (badge, end time, % claimed, Prime-only) | Creators API `searchItems` with `offersV2.listings.price` (`savings`, `savingBasis`) and `offersV2.listings.dealDetails`. Live, never cached. OffersV2 has **no coupon/promotion data** (Amazon discontinued `Offers.Listings.Promotions`). |
+| Bank/card offers | "10% off with HDFC credit cards, up to ₹1,250, on ₹5,000+, until 2 Oct" | **Operator-curated** — neither store publishes these through an API. `BANK_OFFERS_FILE` points at a JSON file ([example](bank-offers.example.json)); each offer must have `ends_at` and a `terms_url` on the merchant's own (allowlisted) domain, or it's skipped. Expired offers hide themselves; the file is re-read when it changes, and a broken edit keeps the last good set. Given the item's price, offers above their minimum order are dropped and the rest carry an `estimated_discount_minor_units`; given the user's banks (the agent stores them as the `payment.cards` preference), matching offers are flagged and listed first. |
+
+A merchant that returns nothing comes back with a `notes` entry saying why (e.g. not configured), so an agent never implies "no deal exists" when it simply couldn't look. Unconfigured connectors are skipped without a call, so they never count against the circuit breaker their searches share.
+
 ## Blinkit (`connectors/blinkit`)
 
 Blinkit publishes no public API, partner catalog API, affiliate API, or MCP server. The community "Blinkit MCP" projects work by driving blinkit.com's consumer site with a headless browser and replaying private endpoints behind Cloudflare/anti-bot protection — mandate §10 forbids exactly that, so none are used or ported. The connector only returns a link to Blinkit's own search page; every capability is false and checkout returns `USER_INTERVENTION_REQUIRED`.

@@ -103,3 +103,51 @@ func TestSearchWeb_DoesNotCacheEmptyOrFailedSearches(t *testing.T) {
 		t.Error("a failed search must not be cached")
 	}
 }
+
+type budgetSearcher struct {
+	countingSearcher
+	gotMax int64
+}
+
+func (b *budgetSearcher) SearchWithBudget(_ context.Context, _ string, _ int, maxPriceMinor int64) ([]websearch.Result, error) {
+	b.calls++
+	b.gotMax = maxPriceMinor
+	return b.results, b.err
+}
+
+func TestSearchWebWithin_DropsListingsOverBudget(t *testing.T) {
+	ctx := context.Background()
+	ws := &budgetSearcher{countingSearcher: countingSearcher{results: []websearch.Result{
+		{Title: "Ferrero Rocher 24pc", Store: "Blinkit", PriceMinorUnits: 89600},
+		{Title: "Store page, no price", Store: "Zepto"},
+		{Title: "Dairy Milk Silk", Store: "Zepto", PriceMinorUnits: 20000},
+		{Title: "Ferrero Rocher 16pc", Store: "Amazon", PriceMinorUnits: 50000},
+	}}}
+	svc, _ := newSearchHarness(t, ws)
+
+	got, err := svc.SearchWebWithin(ctx, "agent_1", "birthday chocolates", 8, 50000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.gotMax != 50000 {
+		t.Errorf("the budget should reach a budget-aware searcher, got %d", ws.gotMax)
+	}
+	want := []string{"Dairy Milk Silk", "Ferrero Rocher 16pc", "Store page, no price"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Title != w {
+			t.Errorf("result %d = %q, want %q (priced within budget first, unpriced last)", i, got[i].Title, w)
+		}
+	}
+
+	// Same query without a ceiling is a different answer — no cache reuse.
+	all, err := svc.SearchWebWithin(ctx, "agent_1", "birthday chocolates", 8, 0)
+	if err != nil || len(all) != 4 {
+		t.Fatalf("no ceiling should return everything: %v %+v", err, all)
+	}
+	if ws.calls != 2 {
+		t.Errorf("a different budget should search again, got %d calls", ws.calls)
+	}
+}

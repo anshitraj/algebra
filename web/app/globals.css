@@ -1,64 +1,84 @@
 @import "tailwindcss";
 
 :root {
-  --color-background: #f7f5f0;
-  --color-surface: #fbfaf6;
-  --color-foreground: #20241d;
-  --color-muted: #5b6355;
+  --color-background: #f7f8fc;
+  --color-surface: #ffffff;
+  --color-foreground: #0b1020;
+  --color-muted: #5b6478;
 
-  --color-primary: #3f5232;
-  --color-primary-soft: #7c9463;
-  --color-primary-tint: #eaeee2;
+  --color-primary: #4f46e5;
+  --color-primary-soft: #818cf8;
+  --color-primary-tint: #eef0ff;
 
-  --color-accent: #b8792f;
-  --color-accent-tint: #f3e6d3;
+  --color-accent: #b45309;
+  --color-accent-tint: #fef3c7;
 
-  --color-danger: #a6412d;
-  --color-danger-tint: #f3e0da;
+  --color-danger: #dc2626;
+  --color-danger-tint: #fee2e2;
 
-  --color-border: color-mix(in srgb, var(--color-foreground) 12%, transparent);
-  --color-border-strong: color-mix(in srgb, var(--color-foreground) 22%, transparent);
+  --color-success: #059669;
+
+  --color-border: color-mix(in srgb, var(--color-foreground) 9%, transparent);
+  --color-border-strong: color-mix(in srgb, var(--color-foreground) 16%, transparent);
+
+  /* Brand gradient stops — indigo into violet into sky. Decorative only. */
+  --glow-indigo: #4f46e5;
+  --glow-violet: #7c3aed;
+  --glow-sky: #0ea5e9;
+  --shadow-ink: 11 16 32;
 }
 
 :root[data-theme="dark"] {
-  --color-background: #14170f;
-  --color-surface: #1b1f15;
-  --color-foreground: #edeae1;
-  --color-muted: #9ba38c;
+  --color-background: #0b0f1a;
+  --color-surface: #111628;
+  --color-foreground: #e8eaf3;
+  --color-muted: #98a1b8;
 
-  --color-primary: #8fae6b;
-  --color-primary-soft: #5f7847;
-  --color-primary-tint: #232b1c;
+  --color-primary: #818cf8;
+  --color-primary-soft: #6366f1;
+  --color-primary-tint: #1d2142;
 
-  --color-accent: #d9a153;
-  --color-accent-tint: #2c2419;
+  --color-accent: #f59e0b;
+  --color-accent-tint: #2a1e0b;
 
-  --color-danger: #d97b63;
-  --color-danger-tint: #2b1e19;
+  --color-danger: #f87171;
+  --color-danger-tint: #2b1418;
 
-  --color-border: color-mix(in srgb, var(--color-foreground) 14%, transparent);
-  --color-border-strong: color-mix(in srgb, var(--color-foreground) 26%, transparent);
+  --color-success: #34d399;
+
+  --color-border: color-mix(in srgb, var(--color-foreground) 11%, transparent);
+  --color-border-strong: color-mix(in srgb, var(--color-foreground) 20%, transparent);
+
+  --glow-indigo: #6366f1;
+  --glow-violet: #8b5cf6;
+  --glow-sky: #38bdf8;
+  --shadow-ink: 0 0 0;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-background: #14170f;
-    --color-surface: #1b1f15;
-    --color-foreground: #edeae1;
-    --color-muted: #9ba38c;
+    --color-background: #0b0f1a;
+    --color-surface: #111628;
+    --color-foreground: #e8eaf3;
+    --color-muted: #98a1b8;
 
-    --color-primary: #8fae6b;
-    --color-primary-soft: #5f7847;
-    --color-primary-tint: #232b1c;
+    --color-primary: #818cf8;
+    --color-primary-soft: #6366f1;
+    --color-primary-tint: #1d2142;
 
-    --color-accent: #d9a153;
-    --color-accent-tint: #2c2419;
+    --color-accent: #f59e0b;
+    --color-accent-tint: #2a1e0b;
 
-    --color-danger: #d97b63;
-    --color-danger-tint: #2b1e19;
+    --color-danger: #f87171;
+    --color-danger-tint: #2b1418;
 
-    --color-border: color-mix(in srgb, var(--color-foreground) 14%, transparent);
-    --color-border-strong: color-mix(in srgb, var(--color-foreground) 26%, transparent);
+    --color-border: color-mix(in srgb, var(--color-foreground) 11%, transparent);
+    --color-border-strong: color-mix(in srgb, var(--color-foreground) 20%, transparent);
+
+    --glow-indigo: #6366f1;
+    --glow-violet: #8b5cf6;
+    --glow-sky: #38bdf8;
+    --shadow-ink: 0 0 0;
   }
 }
 
@@ -74,18 +94,41 @@
   --color-accent-tint: var(--color-accent-tint);
   --color-danger: var(--color-danger);
   --color-danger-tint: var(--color-danger-tint);
+  --color-success: var(--color-success);
   --color-border: var(--color-border);
   --color-border-strong: var(--color-border-strong);
 
-  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
-  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+  --font-display: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
 body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* The brand's one decorative gesture: a soft indigo → violet → sky light
+   behind the product, never behind text. */
+.brand-glow {
+  background:
+    radial-gradient(38% 46% at 72% 24%, color-mix(in srgb, var(--glow-indigo) 26%, transparent), transparent 72%),
+    radial-gradient(34% 42% at 92% 58%, color-mix(in srgb, var(--glow-violet) 20%, transparent), transparent 72%),
+    radial-gradient(30% 38% at 56% 74%, color-mix(in srgb, var(--glow-sky) 18%, transparent), transparent 72%);
+  filter: blur(8px);
+}
+
+/* A product frame lit by the brand gradient on its edge. */
+.brand-frame {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+    linear-gradient(135deg, color-mix(in srgb, var(--glow-indigo) 55%, transparent), color-mix(in srgb, var(--glow-violet) 35%, transparent) 45%, color-mix(in srgb, var(--glow-sky) 45%, transparent)) border-box;
+  box-shadow:
+    0 1px 2px rgb(var(--shadow-ink) / 0.06),
+    0 30px 60px -30px color-mix(in srgb, var(--glow-indigo) 45%, transparent);
 }
 
 /* Browser surfaces carry the design too — craft-floor.md */
@@ -122,4 +165,132 @@ a {
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Agent live activity — waiting shows the work being done, not a spinner.
+   Everything here loops only while a step runs (the element unmounts after). */
+@keyframes agent-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes agent-shimmer {
+  from {
+    -webkit-mask-position: 150% 0;
+    mask-position: 150% 0;
+  }
+  to {
+    -webkit-mask-position: -50% 0;
+    mask-position: -50% 0;
+  }
+}
+@keyframes agent-load {
+  0% {
+    transform: translateX(-60%) scaleX(0.25);
+  }
+  60% {
+    transform: translateX(40%) scaleX(0.55);
+  }
+  100% {
+    transform: translateX(160%) scaleX(0.25);
+  }
+}
+@keyframes agent-ping {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* A label that reads as live: a soft highlight travels across the text. */
+.agent-shimmer-text {
+  -webkit-mask-image: linear-gradient(90deg, rgb(0 0 0 / 0.5) 35%, #000 50%, rgb(0 0 0 / 0.5) 65%);
+  mask-image: linear-gradient(90deg, rgb(0 0 0 / 0.5) 35%, #000 50%, rgb(0 0 0 / 0.5) 65%);
+  -webkit-mask-size: 250% 100%;
+  mask-size: 250% 100%;
+  animation: agent-shimmer 2.4s linear infinite;
+}
+
+/* Placeholder blocks with a light sweep; --sweep-delay staggers a column of them. */
+.agent-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
+}
+.agent-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-foreground) 9%, transparent), transparent);
+  transform: translateX(-100%);
+  animation: agent-sweep 1.5s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  animation-delay: var(--sweep-delay, 0s);
+}
+
+/* The browser's own loading bar, under the address field. */
+.agent-loadbar {
+  position: relative;
+  overflow: hidden;
+  height: 2px;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+.agent-loadbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--color-primary);
+  transform-origin: left;
+  animation: agent-load 1.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.agent-ping {
+  animation: agent-ping 1.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+/* A status line or address arriving: rises into place. Starts visible, so
+   the text still reads if frames stall (background tab, slow device). */
+@keyframes agent-swap-in {
+  from {
+    opacity: 0.35;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes agent-fade-in {
+  from {
+    opacity: 0.35;
+  }
+}
+.agent-swap {
+  animation: agent-swap-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-shimmer-text {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .agent-skeleton::after,
+  .agent-ping {
+    animation: none;
+    opacity: 0;
+  }
+  .agent-loadbar::before {
+    animation: none;
+    transform: scaleX(0.4);
+  }
+  .agent-swap {
+    animation-name: agent-fade-in;
+  }
 }

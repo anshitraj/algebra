@@ -47,7 +47,7 @@ export function Nav() {
       <div
         className={`mx-auto flex h-14 max-w-6xl items-center justify-between rounded-2xl border px-3 transition-[background-color,border-color,box-shadow] duration-300 md:px-4 ${
           scrolled
-            ? "border-border bg-background/80 shadow-[0_10px_30px_-18px_rgba(32,36,29,0.35)] backdrop-blur-xl"
+            ? "border-border bg-background/80 shadow-[0_10px_30px_-18px_rgba(11,16,32,0.35)] backdrop-blur-xl"
             : "border-transparent bg-transparent"
         }`}
       >
@@ -118,7 +118,7 @@ export function Nav() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="mx-auto mt-2 max-w-6xl overflow-hidden rounded-2xl border border-border bg-background/95 p-3 shadow-[0_20px_40px_-20px_rgba(32,36,29,0.4)] backdrop-blur-xl lg:hidden"
+            className="mx-auto mt-2 max-w-6xl overflow-hidden rounded-2xl border border-border bg-background/95 p-3 shadow-[0_20px_40px_-20px_rgba(11,16,32,0.4)] backdrop-blur-xl lg:hidden"
           >
             <nav className="flex flex-col" aria-label="Mobile">
               {links.map((l, i) => (

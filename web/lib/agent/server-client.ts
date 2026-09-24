@@ -5,9 +5,10 @@
 // can shop within policy but is rejected by every approval endpoint.
 // Wraps only the endpoints the agent's tools need — see tools.ts.
 
-import type {
+import type { Plugin,
   AuditEvent,
   CommerceProfile,
+  DealResults,
   ExecuteResult,
   Guardrails,
   Intent,
@@ -23,6 +24,8 @@ const API_URL = process.env.ALGEBRA_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?
 
 export type ServerIdentity = {
   agentToken: string;
+  /** "demo" accounts check out through the simulated demo store. */
+  mode: "live" | "demo";
   /** The user's per-purchase cap — the budget when they didn't state one. */
   defaultBudgetMinor?: number;
 };
@@ -82,8 +85,25 @@ async function sessionFetch<T>(path: string, cookie: string, method = "GET"): Pr
 
 /** The session's console-agent token. Throws a 401 ServerApiError if the cookie is missing or stale. */
 export async function getAgentToken(cookie: string): Promise<ServerIdentity> {
-  const { token } = await sessionFetch<{ token: string }>("/api/v1/auth/agent-token", cookie, "POST");
-  return { agentToken: token };
+  const { token, mode } = await sessionFetch<{ token: string; mode?: string }>("/api/v1/auth/agent-token", cookie, "POST");
+  return { agentToken: token, mode: mode === "demo" ? "demo" : "live" };
+}
+
+export type TurnQuota = { ok: true } | { ok: false; limit: number; demo: boolean; retryAfterSeconds: number };
+
+/**
+ * Spends one of the user's daily agent messages (POST /api/v1/me/agent-turns).
+ * Every message costs an LLM call and billed web searches, so the API caps
+ * them per person per day — lower for no-signup demo accounts.
+ */
+export async function consumeAgentTurn(cookie: string): Promise<TurnQuota> {
+  const res = await fetch(`${API_URL}/api/v1/me/agent-turns`, { method: "POST", headers: { Cookie: cookie }, cache: "no-store" });
+  if (res.status === 429) {
+    const d = (await res.json().catch(() => ({}))) as { limit?: number; demo?: boolean; retry_after_seconds?: number };
+    return { ok: false, limit: d.limit ?? 0, demo: !!d.demo, retryAfterSeconds: d.retry_after_seconds ?? 0 };
+  }
+  await parse(res);
+  return { ok: true };
 }
 
 export function getGuardrails(cookie: string) {
@@ -96,8 +116,29 @@ export function searchProducts(identity: ServerIdentity, query: string, limit = 
   return apiFetch<{ results: unknown[] }>(`/api/v1/search?q=${encodeURIComponent(query)}&limit=${limit}`, identity);
 }
 
-export function webSearch(identity: ServerIdentity, query: string, limit = 5) {
-  return apiFetch<{ results: unknown[] }>(`/api/v1/web-search?q=${encodeURIComponent(query)}&limit=${limit}`, identity);
+export function webSearch(identity: ServerIdentity, query: string, limit = 8, maxPriceMinor?: number) {
+  const budget = maxPriceMinor ? `&max_price=${maxPriceMinor}` : "";
+  return apiFetch<{ results: unknown[] }>(`/api/v1/web-search?q=${encodeURIComponent(query)}&limit=${limit}${budget}`, identity);
+}
+
+export function communityDeals(identity: ServerIdentity, query: string) {
+  return apiFetch<{ tips: unknown[]; searched: string[] }>(`/api/v1/community-deals?q=${encodeURIComponent(query)}`, identity);
+}
+
+/** The person's plugins (session cookie) — which sources this turn may use. */
+export async function getPlugins(cookie: string): Promise<Plugin[]> {
+  const r = await sessionFetch<{ plugins: Plugin[] }>("/api/v1/me/plugins", cookie);
+  return r.plugins ?? [];
+}
+
+export type DealParams = { query: string; merchants?: string[]; priceMinor?: number; banks?: string[]; limit?: number };
+
+export function findDeals(identity: ServerIdentity, p: DealParams) {
+  const qs = new URLSearchParams({ q: p.query, limit: String(p.limit ?? 5) });
+  if (p.merchants?.length) qs.set("merchant", p.merchants.join(","));
+  if (p.priceMinor && p.priceMinor > 0) qs.set("price", String(Math.round(p.priceMinor)));
+  if (p.banks?.length) qs.set("banks", p.banks.join(","));
+  return apiFetch<DealResults>(`/api/v1/deals?${qs.toString()}`, identity);
 }
 
 export function createIntent(

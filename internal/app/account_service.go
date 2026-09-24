@@ -43,6 +43,10 @@ type AccountStore interface {
 	// ConsumeResetToken atomically marks an unexpired, unused token used
 	// and returns its user — a second call with the same token fails.
 	ConsumeResetToken(ctx context.Context, hash string, now time.Time) (userID string, err error)
+
+	// EraseUser scrubs the user's personal data and revokes every way to
+	// act as them; financial records stay, keyed by the anonymous ID.
+	EraseUser(ctx context.Context, userID string, at time.Time) error
 }
 
 // GuardrailStore persists a user's own account.Guardrails.
@@ -244,9 +248,38 @@ func (s *AccountService) fillProfile(ctx context.Context, u *account.User, p acc
 	}
 }
 
+// DemoSessionTTL is how long a demo account's session lives. There is no
+// password to sign back in with, so when it ends the demo account is done.
+const DemoSessionTTL = 72 * time.Hour
+
+// StartDemo creates a fresh demo account (account.ModeDemo) and signs it in.
+// Every visitor gets their own, so no one sees anyone else's demo orders.
+// It has no password and an undeliverable address (.invalid), so it can't
+// be signed into again or receive mail — the session is the account.
+func (s *AccountService) StartDemo(ctx context.Context, meta account.ClientMeta) (*SignInResult, error) {
+	id := newID("user")
+	u := &account.User{
+		ID: id, Email: "demo-" + strings.TrimPrefix(id, "user_") + "@demo.algebra.invalid",
+		Name: "Demo shopper", Mode: account.ModeDemo, CreatedAt: s.now(),
+	}
+	if err := s.store.CreateUser(ctx, u); err != nil {
+		return nil, err
+	}
+	res, err := s.startSessionTTL(ctx, u, meta, DemoSessionTTL)
+	if err != nil {
+		return nil, err
+	}
+	res.Created = true
+	return res, nil
+}
+
 // startSession mints the session cookie token and the session's own console
 // agent, sealing the agent's token so the server-side LLM loop can use it.
 func (s *AccountService) startSession(ctx context.Context, u *account.User, meta account.ClientMeta) (*SignInResult, error) {
+	return s.startSessionTTL(ctx, u, meta, s.sessionTTL)
+}
+
+func (s *AccountService) startSessionTTL(ctx context.Context, u *account.User, meta account.ClientMeta, ttl time.Duration) (*SignInResult, error) {
 	raw, hash, err := account.NewSessionToken()
 	if err != nil {
 		return nil, err
@@ -259,7 +292,7 @@ func (s *AccountService) startSession(ctx context.Context, u *account.User, meta
 	sess := &account.Session{
 		ID: newID("sess"), UserID: u.ID, TokenHash: hash, AgentID: ag.ID,
 		UserAgent: truncate(meta.UserAgent, 256), IP: truncate(meta.IP, 64),
-		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(s.sessionTTL),
+		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
 	}
 	ct, nonce, err := s.sealer.Encrypt([]byte(agentToken), sessionAAD(sess))
 	if err != nil {
@@ -343,6 +376,29 @@ func (s *AccountService) AgentToken(sess *account.Session) (string, error) {
 		return "", fmt.Errorf("app: unsealing console agent token: %w", err)
 	}
 	return string(pt), nil
+}
+
+// UserMode reports whether the user's account is live or demo — used by
+// DiscoveryService to route purchases (AccountModes).
+func (s *AccountService) UserMode(ctx context.Context, userID string) (account.Mode, error) {
+	u, err := s.store.GetUser(ctx, userID)
+	if err != nil {
+		return account.ModeLive, err
+	}
+	if u.IsDemo() {
+		return account.ModeDemo, nil
+	}
+	return account.ModeLive, nil
+}
+
+// DeleteAccount erases a person's account at their request (the DPDP
+// Act's right to erasure). Their name, email, password, linked sign-ins,
+// sessions, saved addresses and preferences go, and every agent token is
+// revoked, so nothing can sign in or act as them again. Orders and the
+// audit trail stay, tied only to the now-anonymous user ID — they're
+// records Algebra must keep.
+func (s *AccountService) DeleteAccount(ctx context.Context, userID string) error {
+	return s.store.EraseUser(ctx, userID, s.now())
 }
 
 func (s *AccountService) User(ctx context.Context, id string) (*account.User, error) {

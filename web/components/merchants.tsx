@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Container } from "./container";
+import { StoreLogo } from "./store-logo";
 
 type MerchantStatus = {
   name: string;
@@ -82,7 +83,10 @@ export function Merchants() {
               {merchants.map((m) => (
                 <tr key={m.name} className="border-b border-border last:border-b-0">
                   <td className="px-5 py-4 font-display text-sm font-semibold text-foreground">
-                    {displayName[m.name] ?? m.name}
+                    <span className="flex items-center gap-3">
+                      <StoreLogo store={m.name} size={28} />
+                      {displayName[m.name] ?? m.name}
+                    </span>
                   </td>
                   <td className="px-5 py-4 font-mono text-xs text-muted">
                     {m.status.integration}

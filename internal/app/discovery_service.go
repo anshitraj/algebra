@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/project-algebra/algebra/internal/domain/account"
 	agentpkg "github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/audit"
 	"github.com/project-algebra/algebra/internal/domain/intent"
@@ -44,6 +45,69 @@ type DiscoveryService struct {
 	// searchCache is optional — see SetSearchCache.
 	searchCache    SearchCache
 	searchCacheTTL time.Duration
+
+	// bankOffers is optional — see SetBankOffers (deals.go).
+	bankOffers BankOfferSource
+
+	// modes/listingObserver are optional — see SetAccountModes and
+	// SetListingObserver.
+	modes           AccountModes
+	listingObserver func([]websearch.Result)
+
+	// community/plugins are optional — see SetCommunitySearcher and
+	// SetPlugins (community.go).
+	community CommunitySearcher
+	plugins   *PluginService
+}
+
+// AccountModes reports whether a user's account is live or demo
+// (AccountService implements it).
+type AccountModes interface {
+	UserMode(ctx context.Context, userID string) (account.Mode, error)
+}
+
+// SetAccountModes turns on routing by account mode: demo accounts buy only
+// through the demo checkout, live accounts never reach it (or the mock
+// test store). Nil (never called) leaves every connector eligible, as in
+// tests.
+func (s *DiscoveryService) SetAccountModes(m AccountModes) { s.modes = m }
+
+// SetListingObserver is told about every web-search result set, so the demo
+// checkout can sell exactly the listing the user was shown.
+func (s *DiscoveryService) SetListingObserver(fn func([]websearch.Result)) { s.listingObserver = fn }
+
+// demoCheckout is the connector name only demo accounts may use
+// (connectors/democheckout.Name, repeated here so app doesn't import a
+// connector package).
+const demoCheckout = "demo_checkout"
+
+// modeFor returns the user's account mode, or "" when routing by mode is
+// off. A lookup failure counts as live — the mode that can't reach a
+// simulated store.
+func (s *DiscoveryService) modeFor(ctx context.Context, userID string) account.Mode {
+	if s.modes == nil {
+		return ""
+	}
+	m, err := s.modes.UserMode(ctx, userID)
+	if err != nil || m != account.ModeDemo {
+		return account.ModeLive
+	}
+	return account.ModeDemo
+}
+
+// allowedFor reports whether a connector may serve an account in mode.
+// Demo accounts see every real store (catalog results, handoff links) and
+// buy only through the demo checkout (candidateMerchants); live accounts
+// never reach the demo checkout or the mock test store.
+func allowedFor(mode account.Mode, name string) bool {
+	switch mode {
+	case account.ModeDemo:
+		return name != "mock"
+	case account.ModeLive:
+		return name != demoCheckout && name != "mock"
+	default:
+		return name != demoCheckout
+	}
 }
 
 func NewDiscoveryService(intents IntentStore, agents AgentStore, quotes QuoteStore, connectors *ConnectorRegistry, auditLogger audit.Logger, quoteTTL time.Duration) *DiscoveryService {
@@ -134,7 +198,16 @@ func (s *DiscoveryService) callConnector(ctx context.Context, connector merchant
 // search-only catalog integration (the Amazon and Flipkart affiliate APIs)
 // would otherwise fail at CreateCart on every intent and trip its circuit
 // breaker — taking its perfectly good search results down with it.
-func (s *DiscoveryService) candidateMerchants(pi *intent.PurchaseIntent) []merchant.Connector {
+func (s *DiscoveryService) candidateMerchants(pi *intent.PurchaseIntent, mode account.Mode) []merchant.Connector {
+	// A demo account's purchases all go through the demo checkout, whatever
+	// stores its profile prefers.
+	if mode == account.ModeDemo {
+		c, err := s.connectors.Get(demoCheckout)
+		if err != nil || !c.Capabilities().Cart {
+			return nil
+		}
+		return []merchant.Connector{c}
+	}
 	excluded := map[string]bool{}
 	for _, m := range pi.Constraints.ExcludedMerchants {
 		excluded[m] = true
@@ -146,7 +219,7 @@ func (s *DiscoveryService) candidateMerchants(pi *intent.PurchaseIntent) []merch
 
 	var out []merchant.Connector
 	for _, c := range s.connectors.List() {
-		if excluded[c.Name()] {
+		if excluded[c.Name()] || !allowedFor(mode, c.Name()) {
 			continue
 		}
 		if len(preferred) > 0 && !preferred[c.Name()] {
@@ -179,7 +252,7 @@ func (s *DiscoveryService) Discover(ctx context.Context, agentID, intentID strin
 	}
 
 	var quotes []*quote.CheckoutQuote
-	for _, connector := range s.candidateMerchants(pi) {
+	for _, connector := range s.candidateMerchants(pi, s.modeFor(ctx, pi.UserID)) {
 		var q *quote.CheckoutQuote
 		callErr := s.callConnector(ctx, connector, func(callCtx context.Context) error {
 			var innerErr error
@@ -229,14 +302,21 @@ type MerchantSearchResult struct {
 // search but offer a handoff link are included with that link, so an agent
 // can still present them as an option without pretending to have results.
 func (s *DiscoveryService) SearchProducts(ctx context.Context, agentID, query string, limit int) ([]MerchantSearchResult, error) {
-	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
+	ag, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead)
+	if err != nil {
 		return nil, err
 	}
 	if limit <= 0 {
 		limit = 5
 	}
+	mode := s.modeFor(ctx, ag.UserID)
 	var out []MerchantSearchResult
 	for _, c := range s.connectors.List() {
+		// The demo checkout sells what web_search found; listing it here too
+		// would only run the same web search twice.
+		if c.Name() == demoCheckout || !allowedFor(mode, c.Name()) {
+			continue
+		}
 		if !c.Capabilities().Search {
 			if link := s.handoffLink(c, query); link != "" {
 				out = append(out, MerchantSearchResult{Merchant: c.Name(), HandoffURL: link})
@@ -264,9 +344,33 @@ func (s *DiscoveryService) SearchProducts(ctx context.Context, agentID, query st
 // to one storefront. Off (ErrNotImplemented) unless GEMINI_API_KEY (or
 // Custom Search credentials) is configured.
 func (s *DiscoveryService) SearchWeb(ctx context.Context, agentID, query string, limit int) ([]websearch.Result, error) {
+	return s.SearchWebWithin(ctx, agentID, query, limit, 0)
+}
+
+// SearchWebWithin is SearchWeb with a price ceiling (minor units; 0 = none).
+// Anything the search shows above the ceiling is dropped — a user who said
+// "under ₹500" should never be shown an ₹896 box. Listings with no visible
+// price can't be checked, so they're kept but ranked after priced ones.
+func (s *DiscoveryService) SearchWebWithin(ctx context.Context, agentID, query string, limit int, maxPriceMinor int64) ([]websearch.Result, error) {
 	if _, err := requirePermission(ctx, s.agents, agentID, agentpkg.PermShoppingRead); err != nil {
 		return nil, err
 	}
+	results, err := s.webListings(ctx, query, limit, maxPriceMinor)
+	if err == nil && s.listingObserver != nil && len(results) > 0 {
+		s.listingObserver(results)
+	}
+	return results, err
+}
+
+// WebListings is the cached web product search without an agent — for the
+// demo checkout connector, which prices real listings. Same cache as the
+// agent's web_search, so buying what the agent just showed doesn't search
+// again.
+func (s *DiscoveryService) WebListings(ctx context.Context, query string, limit int) ([]websearch.Result, error) {
+	return s.webListings(ctx, query, limit, 0)
+}
+
+func (s *DiscoveryService) webListings(ctx context.Context, query string, limit int, maxPriceMinor int64) ([]websearch.Result, error) {
 	if s.webSearch == nil {
 		return nil, fmt.Errorf("%w: web search is not configured (set GEMINI_API_KEY, or GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_ENGINE_ID)", shared.ErrNotImplemented)
 	}
@@ -275,23 +379,51 @@ func (s *DiscoveryService) SearchWeb(ctx context.Context, agentID, query string,
 	}
 	// Normalized so "Coke Zero", "coke zero" and "  Coke  Zero " share one
 	// cached answer.
-	cacheKey := fmt.Sprintf("algebra:websearch:%d:%s", limit, strings.ToLower(strings.Join(strings.Fields(query), " ")))
+	// v3: bump whenever websearch.Result's shape changes, so a deploy never
+	// serves rows cached in the old shape (v2 added image_url, v3 warnings).
+	cacheKey := fmt.Sprintf("algebra:websearch:v5:%d:%d:%s", limit, maxPriceMinor, strings.ToLower(strings.Join(strings.Fields(query), " ")))
 	if s.searchCache != nil {
 		var cached []websearch.Result
 		if s.searchCache.GetJSON(ctx, cacheKey, &cached) {
 			return cached, nil
 		}
 	}
-	results, err := s.webSearch.Search(ctx, query, limit)
+	var results []websearch.Result
+	var err error
+	if bs, ok := s.webSearch.(BudgetSearcher); ok && maxPriceMinor > 0 {
+		results, err = bs.SearchWithBudget(ctx, query, limit, maxPriceMinor)
+	} else {
+		results, err = s.webSearch.Search(ctx, query, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
+	results = websearch.FlagSuspicious(withinBudget(results, maxPriceMinor))
 	// Only cache a useful answer: an empty result is often a transient
 	// upstream hiccup, and caching it would hide the product for minutes.
 	if s.searchCache != nil && len(results) > 0 {
 		s.searchCache.SetJSON(ctx, cacheKey, results, s.searchCacheTTL)
 	}
 	return results, nil
+}
+
+// withinBudget drops priced listings above maxPriceMinor and moves
+// unpriced ones after the priced ones. 0 means no ceiling.
+func withinBudget(in []websearch.Result, maxPriceMinor int64) []websearch.Result {
+	if maxPriceMinor <= 0 {
+		return in
+	}
+	priced := make([]websearch.Result, 0, len(in))
+	var unpriced []websearch.Result
+	for _, r := range in {
+		switch {
+		case r.PriceMinorUnits == 0:
+			unpriced = append(unpriced, r)
+		case r.PriceMinorUnits <= maxPriceMinor:
+			priced = append(priced, r)
+		}
+	}
+	return append(priced, unpriced...)
 }
 
 // handoffLink returns a connector's merchant-owned search link, if it has

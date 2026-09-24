@@ -64,6 +64,10 @@ type Config struct {
 	// GeminiSearchModel defaults to the stable "latest Flash" alias.
 	GeminiAPIKey      string
 	GeminiSearchModel string
+	// TavilyAPIKey (optional) makes community deal plugins read through
+	// Tavily, which can limit results to the last week; without it they use
+	// Gemini's grounded Google search.
+	TavilyAPIKey string
 	// WebSearchCacheTTL is how long a web-search result is reused (Redis).
 	WebSearchCacheTTL time.Duration
 
@@ -110,6 +114,41 @@ type AuthConfig struct {
 	// POST /agents. Off by default; never enable it on a reachable host —
 	// it lets any caller act as any user.
 	DevHeaderAuth bool
+
+	// DemoAccounts offers "Try the demo" on the sign-in page: a one-click
+	// account that shops real listings with a simulated checkout (fake
+	// money). On unless DEMO_ACCOUNTS=off.
+	DemoAccounts bool
+	// PasswordLogin offers email + password sign-in and sign-up. On unless
+	// PASSWORD_LOGIN=off — turn it off once Google/GitHub sign-in is the
+	// only way into a real account.
+	PasswordLogin bool
+
+	// OperatorToken (ALGEBRA_OPERATOR_TOKEN) gates B2B registration —
+	// POST /tenants and POST /integrators — and lets the operator revoke any
+	// tenant or integrator. Sent as the X-Algebra-Operator-Token header.
+	// Unset: registration stays open in development and is closed in
+	// production.
+	OperatorToken string
+	// Production mirrors APP_ENV=production for handlers that behave
+	// differently there.
+	Production bool
+
+	// Daily caps on what one person can cost: every agent message is an LLM
+	// call plus billed web searches, and demo accounts need no signup.
+	// 0 turns a cap off. Enforced only when Redis is configured.
+	AgentTurnsPerDay        int
+	DemoAgentTurnsPerDay    int
+	DemoAccountsPerIPPerDay int
+
+	// TrustedProxyHops (TRUSTED_PROXY_HOPS) is how many X-Forwarded-For
+	// entries, from the right, our own infrastructure wrote. The web app's
+	// rewrite passes the header through unchanged, so count the load
+	// balancers in front of it: 1 (default) for one that appends the client
+	// address (nginx, AWS ALB, most proxies), 2 for Google Cloud's HTTPS load
+	// balancer (it appends the client and its own address). Per-IP limits key
+	// on that entry; everything left of it is client-supplied.
+	TrustedProxyHops int
 }
 
 // CookieSecure reports whether session cookies must be Secure.
@@ -155,6 +194,11 @@ type MerchantsConfig struct {
 	AmazonCredentialVersion string
 	AmazonPartnerTag        string
 	AmazonMarketplace       string
+
+	// BankOffersFile is the operator-curated bank/card offers JSON
+	// (internal/platform/bankoffers; docs/bank-offers.example.json). Empty
+	// means bank offers are off.
+	BankOffersFile string
 }
 
 // IsEnabled reports whether the named connector should be registered.
@@ -236,6 +280,7 @@ func FromEnv() (*Config, error) {
 	cfg.GoogleSearchEngineID = os.Getenv("GOOGLE_SEARCH_ENGINE_ID")
 	cfg.GeminiAPIKey = getEnv("GEMINI_API_KEY", os.Getenv("GOOGLE_GEMINI_API"))
 	cfg.GeminiSearchModel = os.Getenv("GEMINI_SEARCH_MODEL")
+	cfg.TavilyAPIKey = os.Getenv("TAVILY_API_KEY")
 	webSearchTTL, err := getDuration("WEB_SEARCH_CACHE_TTL", 10*time.Minute)
 	if err != nil {
 		return nil, err
@@ -243,6 +288,22 @@ func FromEnv() (*Config, error) {
 	cfg.WebSearchCacheTTL = webSearchTTL
 
 	sessionTTL, err := getDuration("SESSION_TTL", 30*24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	agentTurns, err := getInt64("AGENT_TURNS_PER_DAY", 200)
+	if err != nil {
+		return nil, err
+	}
+	demoAgentTurns, err := getInt64("DEMO_AGENT_TURNS_PER_DAY", 40)
+	if err != nil {
+		return nil, err
+	}
+	demoPerIP, err := getInt64("DEMO_ACCOUNTS_PER_IP_PER_DAY", 5)
+	if err != nil {
+		return nil, err
+	}
+	proxyHops, err := getInt64("TRUSTED_PROXY_HOPS", 1)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +317,15 @@ func FromEnv() (*Config, error) {
 		EmailFrom:          getEnv("EMAIL_FROM", "Algebra <no-reply@algebra.local>"),
 		SessionTTL:         sessionTTL,
 		DevHeaderAuth:      os.Getenv("ALGEBRA_DEV_AUTH") == "true",
+		DemoAccounts:       !strings.EqualFold(os.Getenv("DEMO_ACCOUNTS"), "off"),
+		PasswordLogin:      !strings.EqualFold(os.Getenv("PASSWORD_LOGIN"), "off"),
+		OperatorToken:      strings.TrimSpace(os.Getenv("ALGEBRA_OPERATOR_TOKEN")),
+		Production:         cfg.Env == "production",
+
+		AgentTurnsPerDay:        int(agentTurns),
+		DemoAgentTurnsPerDay:    int(demoAgentTurns),
+		DemoAccountsPerIPPerDay: int(demoPerIP),
+		TrustedProxyHops:        int(proxyHops),
 	}
 
 	growthINR, err := getInt64("GROWTH_PRICE_INR", 8499)
@@ -287,6 +357,7 @@ func FromEnv() (*Config, error) {
 		AmazonCredentialVersion:    os.Getenv("AMAZON_CREATORS_CREDENTIAL_VERSION"),
 		AmazonPartnerTag:           os.Getenv("AMAZON_ASSOCIATE_TAG"),
 		AmazonMarketplace:          getEnv("AMAZON_MARKETPLACE", defaultAmazonMarketplace),
+		BankOffersFile:             getEnv("BANK_OFFERS_FILE", ""),
 	}
 
 	if cfg.MasterKeyBase64 == "" {
@@ -337,6 +408,9 @@ func (c *Config) ValidateProduction() error {
 		if c.Billing.RazorpayWebhookSecret == "" {
 			problems = append(problems, "RAZORPAY_WEBHOOK_SECRET is required with Razorpay — renewals and failed charges arrive by webhook")
 		}
+	}
+	if t := c.Auth.OperatorToken; t != "" && len(t) < 32 {
+		problems = append(problems, "ALGEBRA_OPERATOR_TOKEN must be at least 32 characters (openssl rand -hex 32)")
 	}
 	for _, o := range c.CORSAllowedOrigins {
 		if !strings.HasPrefix(o, "https://") {

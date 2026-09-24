@@ -2,6 +2,7 @@ package v1
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -41,7 +42,16 @@ func (a *API) webSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "q is required"})
 		return
 	}
-	results, err := a.b.Discovery.SearchWeb(r.Context(), ag.ID, q, queryLimit(r))
+	var maxPrice int64
+	if v := r.URL.Query().Get("max_price"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "max_price must be a non-negative integer (minor units)"})
+			return
+		}
+		maxPrice = n
+	}
+	results, err := a.b.Discovery.SearchWebWithin(r.Context(), ag.ID, q, queryLimit(r), maxPrice)
 	if err != nil {
 		writeError(w, err)
 		return

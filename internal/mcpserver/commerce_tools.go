@@ -20,10 +20,24 @@ type searchProductsInput struct {
 	AgentToken string `json:"agent_token" jsonschema:"bearer token identifying the calling agent"`
 	Query      string `json:"query" jsonschema:"free-text product search query"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"max results per merchant, default 5"`
+	// MaxPriceMinorUnits is used by commerce.web_search only: listings priced
+	// above it are dropped (paise for INR; 0 = no ceiling).
+	MaxPriceMinorUnits int64 `json:"max_price_minor_units,omitempty" jsonschema:"web_search only: drop listings priced above this, in minor units (paise)"`
 }
 
 type searchProductsOutput struct {
 	Results []app.MerchantSearchResult `json:"results"`
+}
+
+// --- commerce.find_deals ---
+
+type findDealsInput struct {
+	AgentToken      string   `json:"agent_token" jsonschema:"bearer token identifying the calling agent"`
+	Query           string   `json:"query" jsonschema:"what the user is shopping for, e.g. 'wireless mouse'; empty returns headline offers"`
+	Merchants       []string `json:"merchants,omitempty" jsonschema:"connector names to check, e.g. ['amazon','flipkart']; default every merchant that publishes deals"`
+	PriceMinorUnits int64    `json:"price_minor_units,omitempty" jsonschema:"price of the item being considered, in minor units (paise): drops bank offers with a higher minimum order and estimates the rest"`
+	Banks           []string `json:"banks,omitempty" jsonschema:"banks the user holds cards from, e.g. ['HDFC','SBI']: matching bank offers are flagged and listed first"`
+	Limit           int      `json:"limit,omitempty" jsonschema:"max deals per merchant, default 5, max 10"`
 }
 
 func (srv *Server) registerCommerceTools(s *gomcp.Server) {
@@ -51,7 +65,7 @@ func (srv *Server) registerCommerceTools(s *gomcp.Server) {
 		if err != nil {
 			return nil, webSearchOutput{}, err
 		}
-		results, err := srv.Discovery.SearchWeb(ctx, ag.ID, in.Query, in.Limit)
+		results, err := srv.Discovery.SearchWebWithin(ctx, ag.ID, in.Query, in.Limit, in.MaxPriceMinorUnits)
 		if err != nil {
 			return nil, webSearchOutput{}, err
 		}
@@ -77,6 +91,25 @@ func (srv *Server) registerCommerceTools(s *gomcp.Server) {
 			}
 		}
 		return nil, searchProductsOutput{Results: merged}, nil
+	})
+
+	gomcp.AddTool(s, &gomcp.Tool{
+		Name: "commerce.find_deals",
+		Description: "Find what's discounted for a product: each merchant's own published deals (Flipkart offers and Deals of the Day, Amazon price drops and time-boxed deals, via their official APIs) " +
+			"plus curated bank/card offers with their terms, minimum order and end date. Informational only — nothing is applied to a cart, and no coupon code is ever returned because neither merchant's API publishes codes. " +
+			"notes explain any merchant that returned nothing (e.g. not configured).",
+	}, func(ctx context.Context, _ *gomcp.CallToolRequest, in findDealsInput) (*gomcp.CallToolResult, app.DealResults, error) {
+		ag, err := srv.resolveAgent(ctx, in.AgentToken)
+		if err != nil {
+			return nil, app.DealResults{}, err
+		}
+		res, err := srv.Discovery.FindDeals(ctx, ag.ID, app.DealQuery{
+			Query: in.Query, Merchants: in.Merchants, PriceMinorUnits: in.PriceMinorUnits, Banks: in.Banks, Limit: in.Limit,
+		})
+		if err != nil {
+			return nil, app.DealResults{}, err
+		}
+		return nil, *res, nil
 	})
 
 	// --- commerce.create_purchase_intent / get_purchase_intent ---

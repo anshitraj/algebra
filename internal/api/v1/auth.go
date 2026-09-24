@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/account"
 )
 
@@ -98,15 +99,40 @@ func (a *API) requireSession(w http.ResponseWriter, r *http.Request) (*account.S
 }
 
 func clientMeta(r *http.Request) account.ClientMeta {
-	ip := r.Header.Get("X-Forwarded-For")
-	if i := strings.IndexByte(ip, ','); i >= 0 {
-		ip = ip[:i]
+	return account.ClientMeta{UserAgent: r.UserAgent(), IP: clientIP(r)}
+}
+
+// trustedProxyHops is how many X-Forwarded-For entries, counted from the
+// right, were written by infrastructure we run (TRUSTED_PROXY_HOPS; set by
+// NewRouter). The web app's /api/v1 rewrite passes the header through
+// without adding to it, so this counts the load balancer(s) in front of the
+// web app: 1 for one that appends the client address.
+var trustedProxyHops = 1
+
+// clientIP is the caller's address. RemoteAddr is our own proxy, so the
+// answer is in X-Forwarded-For — but only its last trustedProxyHops entries
+// were written by infrastructure we run. Anything left of them came from the
+// client and can be forged, so it is never used: taking the first entry
+// would let anyone dodge per-IP limits by sending a fake header.
+func clientIP(r *http.Request) string {
+	if hops := trustedProxyHops; hops > 0 {
+		var parts []string
+		for _, h := range r.Header.Values("X-Forwarded-For") {
+			for _, p := range strings.Split(h, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					parts = append(parts, p)
+				}
+			}
+		}
+		if len(parts) >= hops {
+			return parts[len(parts)-hops]
+		}
 	}
-	ip = strings.TrimSpace(ip)
-	if ip == "" {
-		ip, _, _ = net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		return r.RemoteAddr
 	}
-	return account.ClientMeta{UserAgent: r.UserAgent(), IP: ip}
+	return host
 }
 
 func (a *API) setSessionCookie(w http.ResponseWriter, token string) {
@@ -136,6 +162,8 @@ type userResponse struct {
 	HasPassword     bool     `json:"has_password"`
 	LinkedProviders []string `json:"linked_providers"`
 	CreatedAt       string   `json:"created_at"`
+	// Mode is "live" or "demo" — see account.Mode.
+	Mode string `json:"mode"`
 }
 
 func (a *API) toUserResponse(ctx context.Context, u *account.User) userResponse {
@@ -148,7 +176,15 @@ func (a *API) toUserResponse(ctx context.Context, u *account.User) userResponse 
 		EmailVerified: u.EmailVerifiedAt != nil, Onboarded: u.OnboardedAt != nil,
 		HasPassword: u.HasPassword(), LinkedProviders: linked,
 		CreatedAt: u.CreatedAt.UTC().Format(time.RFC3339),
+		Mode:      string(modeOrLive(u.Mode)),
 	}
+}
+
+func modeOrLive(m account.Mode) account.Mode {
+	if m == account.ModeDemo {
+		return m
+	}
+	return account.ModeLive
 }
 
 type sessionResponse struct {
@@ -162,7 +198,51 @@ type sessionResponse struct {
 func (a *API) authProviders(w http.ResponseWriter, _ *http.Request) {
 	_, google := a.b.OAuthProviders["google"]
 	_, github := a.b.OAuthProviders["github"]
-	writeJSON(w, http.StatusOK, map[string]bool{"password": true, "google": google, "github": github})
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"password": a.b.AuthConfig.PasswordLogin, "google": google, "github": github,
+		"demo": a.b.AuthConfig.DemoAccounts && a.b.Demo != nil,
+	})
+}
+
+// passwordLoginOff answers every email + password endpoint once
+// PASSWORD_LOGIN=off (real accounts sign in with Google/GitHub only).
+func (a *API) passwordLoginOff(w http.ResponseWriter) bool {
+	if a.b.AuthConfig.PasswordLogin {
+		return false
+	}
+	writeJSON(w, http.StatusNotFound, errorBody{Error: "email and password sign-in is turned off — continue with Google or GitHub"})
+	return true
+}
+
+// startDemo creates a fresh demo account and signs it in: real product
+// listings, simulated checkout, fake money. No signup, no password.
+func (a *API) startDemo(w http.ResponseWriter, r *http.Request) {
+	if !a.b.AuthConfig.DemoAccounts || a.b.Demo == nil {
+		writeJSON(w, http.StatusNotFound, errorBody{Error: "the demo is turned off on this server"})
+		return
+	}
+	// Demo accounts need no signup, so cap how many one address can open a
+	// day — each one is real LLM and web-search spend.
+	if n := a.b.AuthConfig.DemoAccountsPerIPPerDay; a.limiter != nil && n > 0 {
+		ok, retry, err := a.limiter.Allow(r.Context(), "quota:demo-accounts:"+clientMeta(r).IP, n, 24*time.Hour)
+		if err == nil && !ok {
+			w.Header().Set("Retry-After", formatSeconds(retry))
+			writeJSON(w, http.StatusTooManyRequests, errorBody{Error: "you've started several demos today — try again tomorrow, or create an account"})
+			return
+		}
+	}
+	res, err := a.b.Demo.Start(r.Context(), clientMeta(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: res.Token, Path: "/",
+		MaxAge:   int(app.DemoSessionTTL / time.Second),
+		HttpOnly: true, Secure: a.b.AuthConfig.CookieSecure(), SameSite: http.SameSiteLaxMode,
+	})
+	resp := a.toUserResponse(r.Context(), res.User)
+	writeJSON(w, http.StatusCreated, sessionResponse{User: &resp})
 }
 
 func (a *API) getSession(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +267,9 @@ type signUpRequest struct {
 }
 
 func (a *API) signUp(w http.ResponseWriter, r *http.Request) {
+	if a.passwordLoginOff(w) {
+		return
+	}
 	var req signUpRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
@@ -212,6 +295,9 @@ type signInRequest struct {
 }
 
 func (a *API) signIn(w http.ResponseWriter, r *http.Request) {
+	if a.passwordLoginOff(w) {
+		return
+	}
 	var req signInRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
@@ -247,6 +333,9 @@ type forgotPasswordRequest struct {
 }
 
 func (a *API) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	if a.passwordLoginOff(w) {
+		return
+	}
 	var req forgotPasswordRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
@@ -266,6 +355,9 @@ type resetPasswordRequest struct {
 }
 
 func (a *API) resetPassword(w http.ResponseWriter, r *http.Request) {
+	if a.passwordLoginOff(w) {
+		return
+	}
 	var req resetPasswordRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
@@ -293,8 +385,9 @@ func (a *API) agentToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	mode, _ := a.b.Accounts.UserMode(r.Context(), sess.UserID)
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]string{"agent_id": sess.AgentID, "token": token})
+	writeJSON(w, http.StatusOK, map[string]string{"agent_id": sess.AgentID, "token": token, "mode": string(modeOrLive(mode))})
 }
 
 // --- OAuth ---

@@ -12,6 +12,17 @@ import (
 // Billing for Algebra's own plans. Everything but the webhook is
 // session-only: a user manages their own plan, never an agent.
 
+// getBillingPlans is GET /api/v1/billing/plans — public: the pricing page's
+// numbers, straight from billing config.
+func (a *API) getBillingPlans(w http.ResponseWriter, _ *http.Request) {
+	if a.b.Billing == nil {
+		writeJSON(w, http.StatusNotFound, errorBody{Error: "billing is not configured"})
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, http.StatusOK, a.b.Billing.Plans())
+}
+
 func (a *API) getBilling(w http.ResponseWriter, r *http.Request) {
 	sess, ok := a.requireSession(w, r)
 	if !ok {

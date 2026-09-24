@@ -42,14 +42,14 @@ func TestDiscovery_OnlySearchAndCartMerchantsProduceQuotes(t *testing.T) {
 	h.connectors.Register(searchOnlyFlipkart(t))
 	h.connectors.Register(blinkit.New())
 
-	got := connectorNames(h.Discovery.candidateMerchants(&intent.PurchaseIntent{}))
+	got := connectorNames(h.Discovery.candidateMerchants(&intent.PurchaseIntent{}, ""))
 	if len(got) != 1 || !got["mock"] {
 		t.Fatalf("only merchants with search and cart may quote; candidates were %v", got)
 	}
 
 	pi := &intent.PurchaseIntent{}
 	pi.Constraints.PreferredMerchants = []string{"flipkart"}
-	if got := h.Discovery.candidateMerchants(pi); len(got) != 0 {
+	if got := h.Discovery.candidateMerchants(pi, ""); len(got) != 0 {
 		t.Fatalf("preferring a search-only merchant must not make it quote, got %v", connectorNames(got))
 	}
 }

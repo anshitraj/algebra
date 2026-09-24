@@ -14,6 +14,7 @@ import (
 
 	"github.com/project-algebra/algebra/internal/domain/agent"
 	"github.com/project-algebra/algebra/internal/domain/approval"
+	"github.com/project-algebra/algebra/internal/domain/deal"
 	"github.com/project-algebra/algebra/internal/domain/integrator"
 	"github.com/project-algebra/algebra/internal/domain/intent"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
@@ -183,6 +184,22 @@ type RateLimiter interface {
 // A nil WebSearcher (the default) means the capability is off.
 type WebSearcher interface {
 	Search(ctx context.Context, query string, limit int) ([]websearch.Result, error)
+}
+
+// BankOfferSource supplies the operator-curated bank/card offers
+// (internal/platform/bankoffers). Neither Amazon nor Flipkart publishes
+// these through an API. Offers returns every offer on file, including
+// expired ones — DiscoveryService.FindDeals filters by date.
+type BankOfferSource interface {
+	Offers(ctx context.Context) ([]deal.BankOffer, error)
+}
+
+// BudgetSearcher is a WebSearcher that can steer the search itself toward
+// a price ceiling (connectors/websearch.Gemini). DiscoveryService filters
+// by budget regardless; this just means the search spends its slots on
+// options the user can actually afford instead of ones filtered out later.
+type BudgetSearcher interface {
+	SearchWithBudget(ctx context.Context, query string, limit int, maxPriceMinor int64) ([]websearch.Result, error)
 }
 
 // SearchCache is an optional short-lived cache for web-search results

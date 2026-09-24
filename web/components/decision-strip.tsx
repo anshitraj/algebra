@@ -32,7 +32,7 @@ export function DecisionStrip() {
   const step = steps[i];
 
   return (
-    <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-[0_1px_2px_rgba(32,36,29,0.06),0_12px_28px_-16px_rgba(32,36,29,0.18)]">
+    <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-[0_1px_2px_rgba(11,16,32,0.06),0_12px_28px_-16px_rgba(11,16,32,0.18)]">
       <div className="flex items-center gap-2 text-xs text-muted">
         <span className="font-mono">purchase_intent</span>
         <span className="h-1 w-1 rounded-full bg-border-strong" />

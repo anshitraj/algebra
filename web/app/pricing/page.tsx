@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { Nav } from "@/components/nav";
 import { Container } from "@/components/container";
 import { PricingTiers } from "@/components/pricing-tiers";
+import { getPlans } from "@/lib/plans";
 import { Footer } from "@/components/footer";
 
 export const metadata: Metadata = {
   title: "Pricing — Algebra",
   description:
-    "Algebra is priced on order executions, not gross order value — it's non-custodial and never holds or moves funds. Free for development, $99/mo for a running agent product, custom for scale.",
+    "Algebra is priced on order executions, not gross order value — it's non-custodial and never holds or moves funds. Free for development, a monthly Growth plan for a running agent product, custom for scale.",
 };
 
 const faqs = [
@@ -29,7 +30,8 @@ const faqs = [
   },
 ];
 
-export default function PricingPage() {
+export default async function PricingPage() {
+  const plans = await getPlans();
   return (
     <>
       <Nav />
@@ -47,7 +49,7 @@ export default function PricingPage() {
           </Container>
         </section>
 
-        <PricingTiers />
+        <PricingTiers plans={plans} />
 
         <section id="pricing-faq" className="border-t border-border py-16 md:py-24">
           <Container>

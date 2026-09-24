@@ -1,0 +1,30 @@
+{
+  "offers": [
+    {
+      "merchant": "flipkart",
+      "bank": "HDFC Bank",
+      "card_types": ["credit", "credit_emi"],
+      "title": "10% instant discount on HDFC Bank credit cards",
+      "discount_percent": 10,
+      "max_discount_minor_units": 125000,
+      "min_order_minor_units": 500000,
+      "starts_at": "2025-01-01T00:00:00+05:30",
+      "ends_at": "2025-01-07T23:59:59+05:30",
+      "terms_url": "https://www.flipkart.com/",
+      "verified_at": "2025-01-01",
+      "notes": "EXAMPLE ONLY — dates are in the past so it never shows. Copy real terms from the store's own offer page, and set terms_url to that page."
+    },
+    {
+      "merchant": "amazon",
+      "bank": "SBI",
+      "card_types": ["credit"],
+      "title": "Flat ₹1,500 off with SBI credit cards",
+      "flat_discount_minor_units": 150000,
+      "min_order_minor_units": 2500000,
+      "ends_at": "2025-01-07T23:59:59+05:30",
+      "terms_url": "https://www.amazon.in/",
+      "verified_at": "2025-01-01",
+      "notes": "EXAMPLE ONLY. Amounts are in paise: 150000 = ₹1,500. Set exactly one of discount_percent or flat_discount_minor_units."
+    }
+  ]
+}

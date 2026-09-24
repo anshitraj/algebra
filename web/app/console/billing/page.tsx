@@ -36,7 +36,7 @@ function date(iso?: string) {
 }
 
 function cssColor(name: string) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#3f5232";
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#4f46e5";
 }
 
 function BillingInner() {

@@ -6,10 +6,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "motion/react";
 import * as api from "@/lib/api-client";
 import type { AuthProviders, User } from "@/lib/types";
-import { GitHubMark, GoogleMark } from "@/components/icons";
+import { GitHubMark, GoogleMark, IconCart, IconMapPin, IconReceipt, Spinner } from "@/components/icons";
 import { AuthInput, FormError, PasswordInput, SubmitButton } from "./fields";
 
 type Mode = "login" | "signup";
+/** Which way in: a one-click demo account, or a real (production) account. */
+type Entry = "demo" | "production";
 
 function safeNext(next: string | null): string | null {
   if (!next || !next.startsWith("/") || next.startsWith("//")) return null;
@@ -31,14 +33,18 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(params.get("error"));
+  // Someone sent here from a protected page (?next=) already has an account.
+  const [entry, setEntry] = useState<Entry>(params.get("mode") === "production" || next ? "production" : "demo");
+  const [demoBusy, setDemoBusy] = useState(false);
 
   useEffect(() => {
     api.getAuthProviders().then(setProviders).catch(() => setProviders({ password: true, google: false, github: false }));
-    // Already signed in? Skip the form.
+    // Already signed in? Skip the form — unless it's a demo account, which
+    // comes here to create a real one.
     api
       .getSession()
       .then(({ user }) => {
-        if (user) router.replace(destinationFor(user, next));
+        if (user && user.mode !== "demo") router.replace(destinationFor(user, next));
       })
       .catch(() => {});
   }, [router, next]);
@@ -56,8 +62,24 @@ export function AuthForm({ mode }: { mode: Mode }) {
     }
   }
 
+  async function handleDemo() {
+    setDemoBusy(true);
+    setError(null);
+    try {
+      await api.startDemo();
+      router.replace("/console/agent");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't start the demo. Try again.");
+      setDemoBusy(false);
+    }
+  }
+
   const isSignup = mode === "signup";
   const anyOAuth = providers?.google || providers?.github;
+  const passwordOn = providers?.password !== false;
+  // The chooser shows on sign-in only, and only when this server offers the demo.
+  const showChooser = !isSignup && providers?.demo === true;
+  const showDemo = showChooser && entry === "demo";
 
   return (
     <motion.div
@@ -66,7 +88,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
     >
       <h1 className="font-display text-[1.75rem] leading-tight font-semibold tracking-tight text-foreground">
-        {isSignup ? "Create your account" : "Welcome back"}
+        {isSignup ? "Create your account" : showDemo ? "See Algebra shop for you" : "Welcome back"}
       </h1>
       <p className="mt-2 text-sm text-muted">
         {isSignup ? "Already have an account? " : "New to Algebra? "}
@@ -76,85 +98,193 @@ export function AuthForm({ mode }: { mode: Mode }) {
         >
           {isSignup ? "Sign in" : "Create an account"}
         </Link>
+        {isSignup && providers?.demo && (
+          <>
+            {" · Just looking? "}
+            <Link
+              href="/login?mode=demo"
+              className="font-medium text-primary underline decoration-primary/30 underline-offset-4 hover:decoration-primary"
+            >
+              Try the demo
+            </Link>
+          </>
+        )}
       </p>
 
-      <div className="mt-8 grid gap-2.5">
-        <OAuthButton provider="github" enabled={!!providers?.github} loading={!providers} next={next}>
-          <GitHubMark size={18} /> Continue with GitHub
-        </OAuthButton>
-        <OAuthButton provider="google" enabled={!!providers?.google} loading={!providers} next={next}>
-          <GoogleMark size={18} /> Continue with Google
-        </OAuthButton>
-        {providers && !anyOAuth && (
-          <p className="text-xs leading-relaxed text-muted">
-            Google and GitHub sign-in appear here once their OAuth client IDs are set on the API server.
-          </p>
-        )}
-      </div>
-
-      <div className="my-7 flex items-center gap-3 text-xs text-muted">
-        <span className="h-px flex-1 bg-border" />
-        or with email
-        <span className="h-px flex-1 bg-border" />
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-4" noValidate={false}>
-        {isSignup && (
-          <AuthInput
-            label="Full name"
-            name="name"
-            autoComplete="name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Ada Lovelace"
-            maxLength={80}
-          />
-        )}
-        <AuthInput
-          label="Email"
-          name="email"
-          type="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
-          autoFocus={!isSignup}
+      {showChooser && (
+        <EntryChooser
+          entry={entry}
+          onChange={(e) => {
+            setEntry(e);
+            setError(null);
+          }}
         />
-        <PasswordInput
-          label="Password"
-          name="password"
-          autoComplete={isSignup ? "new-password" : "current-password"}
-          required
-          minLength={isSignup ? 8 : undefined}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder={isSignup ? "At least 8 characters" : "Your password"}
-          trailing={
-            !isSignup ? (
-              <Link href="/forgot-password" className="text-xs font-medium text-muted hover:text-foreground">
-                Forgot password?
+      )}
+
+      {showDemo ? (
+        <DemoPanel busy={demoBusy} error={error} onStart={handleDemo} />
+      ) : (
+        <>
+          <div className={`${showChooser ? "mt-6" : "mt-8"} grid gap-2.5`}>
+            <OAuthButton provider="github" enabled={!!providers?.github} loading={!providers} next={next}>
+              <GitHubMark size={18} /> Continue with GitHub
+            </OAuthButton>
+            <OAuthButton provider="google" enabled={!!providers?.google} loading={!providers} next={next}>
+              <GoogleMark size={18} /> Continue with Google
+            </OAuthButton>
+            {providers && !anyOAuth && (
+              <p className="text-xs leading-relaxed text-muted">
+                Google and GitHub sign-in appear here once their OAuth client IDs are set on the API server.
+              </p>
+            )}
+          </div>
+
+          {passwordOn && (
+            <>
+              <div className="my-7 flex items-center gap-3 text-xs text-muted">
+                <span className="h-px flex-1 bg-border" />
+                or with email
+                <span className="h-px flex-1 bg-border" />
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-4" noValidate={false}>
+                {isSignup && (
+                  <AuthInput
+                    label="Full name"
+                    name="name"
+                    autoComplete="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Ada Lovelace"
+                    maxLength={80}
+                  />
+                )}
+                <AuthInput
+                  label="Email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  autoFocus={!isSignup}
+                />
+                <PasswordInput
+                  label="Password"
+                  name="password"
+                  autoComplete={isSignup ? "new-password" : "current-password"}
+                  required
+                  minLength={isSignup ? 8 : undefined}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={isSignup ? "At least 8 characters" : "Your password"}
+                  trailing={
+                    !isSignup ? (
+                      <Link href="/forgot-password" className="text-xs font-medium text-muted hover:text-foreground">
+                        Forgot password?
+                      </Link>
+                    ) : undefined
+                  }
+                />
+                {isSignup && password.length > 0 && <StrengthHint password={password} />}
+                {!isSignup && params.get("reset") === "1" && !error && (
+                  <p role="status" className="rounded-xl bg-primary-tint px-3.5 py-2.5 text-sm text-primary">
+                    Password updated. Sign in with your new password.
+                  </p>
+                )}
+                {error && <FormError>{error}</FormError>}
+                <SubmitButton busy={busy}>{isSignup ? "Create account" : "Sign in"}</SubmitButton>
+              </form>
+            </>
+          )}
+
+          {isSignup && (
+            <p className="mt-6 text-xs leading-relaxed text-muted">
+              By creating an account you agree to the{" "}
+              <Link href="/terms" className="underline hover:text-foreground">
+                Terms
+              </Link>{" "}
+              and{" "}
+              <Link href="/privacy" className="underline hover:text-foreground">
+                Privacy Policy
               </Link>
-            ) : undefined
-          }
-        />
-        {isSignup && password.length > 0 && <StrengthHint password={password} />}
-        {!isSignup && params.get("reset") === "1" && !error && (
-          <p role="status" className="rounded-xl bg-primary-tint px-3.5 py-2.5 text-sm text-primary">
-            Password updated. Sign in with your new password.
-          </p>
-        )}
-        {error && <FormError>{error}</FormError>}
-        <SubmitButton busy={busy}>{isSignup ? "Create account" : "Sign in"}</SubmitButton>
-      </form>
-
-      {isSignup && (
-        <p className="mt-6 text-xs leading-relaxed text-muted">
-          By creating an account you agree that Algebra acts only within the guardrails you set, and that anything above
-          them waits for your approval.
-        </p>
+              . Algebra acts only within the guardrails you set; anything above them waits for your approval.
+            </p>
+          )}
+        </>
       )}
     </motion.div>
+  );
+}
+
+function EntryChooser({ entry, onChange }: { entry: Entry; onChange: (e: Entry) => void }) {
+  const options: { value: Entry; label: string; hint: string }[] = [
+    { value: "demo", label: "Demo", hint: "No signup · pretend money" },
+    { value: "production", label: "Production", hint: "Your real account" },
+  ];
+  return (
+    <div role="tablist" aria-label="How do you want to continue?" className="mt-7 grid grid-cols-2 gap-1 rounded-2xl bg-primary-tint/50 p-1">
+      {options.map((o) => {
+        const active = entry === o.value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(o.value)}
+            className={`rounded-xl px-3 py-2.5 text-left transition-[background-color,box-shadow] ${
+              active ? "bg-surface shadow-[0_1px_3px_rgb(0_0_0/0.08)]" : "hover:bg-surface/60"
+            }`}
+          >
+            <span className={`block text-sm font-semibold ${active ? "text-foreground" : "text-muted"}`}>{o.label}</span>
+            <span className="block text-xs text-muted">{o.hint}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DemoPanel({ busy, error, onStart }: { busy: boolean; error: string | null; onStart: () => void }) {
+  const points = [
+    { icon: <IconCart size={16} />, text: "Ask for anything. The agent finds real products and live prices from Amazon, Flipkart, Blinkit and more." },
+    { icon: <IconReceipt size={16} />, text: "Checkout is simulated: your guardrails and approvals run for real, but no money moves and nothing ships." },
+    { icon: <IconMapPin size={16} />, text: "Every order gets an invoice and a delivery map, so you can see the whole flow end to end." },
+  ];
+  return (
+    <div className="mt-6">
+      <ul className="space-y-3.5">
+        {points.map((p, i) => (
+          <li key={i} className="flex gap-3 text-sm leading-relaxed text-foreground">
+            <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-primary-tint text-primary">{p.icon}</span>
+            <span>{p.text}</span>
+          </li>
+        ))}
+      </ul>
+      {error && (
+        <div className="mt-5">
+          <FormError>{error}</FormError>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onStart}
+        disabled={busy}
+        className="mt-7 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary text-[0.95rem] font-medium text-primary-tint shadow-[0_6px_16px_-8px_color-mix(in_srgb,var(--color-primary)_80%,transparent)] transition-[transform,opacity] hover:opacity-95 active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
+      >
+        {busy && <Spinner size={16} />}
+        {busy ? "Setting up your demo…" : "Start the demo"}
+      </button>
+      <p className="mt-3 text-center text-xs text-muted">
+        A fresh demo account just for you. No email, no password; it ends after 3 days. By starting it you agree to the{" "}
+        <Link href="/terms" className="underline hover:text-foreground">
+          Terms
+        </Link>
+        .
+      </p>
+    </div>
   );
 }
 

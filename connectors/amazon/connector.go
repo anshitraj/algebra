@@ -18,6 +18,8 @@
 //
 // Capabilities: search only. Amazon offers Associates no cart or order API,
 // so checkout is always the user's, on Amazon, via the detail-page link.
+// Deals (deals.go) come from the same searchItems call: the listing's
+// savings against Amazon's reference price and any live deal details.
 // Associates policy also limits how long prices may be shown without
 // refreshing; search results here are fetched live and never cached.
 package amazon
@@ -108,6 +110,7 @@ type Connector struct {
 	http      *http.Client
 	tokens    oauth2.TokenSource
 	configErr string
+	now       func() time.Time
 }
 
 func New(cfg Config) *Connector {
@@ -124,10 +127,10 @@ func New(cfg Config) *Connector {
 	}
 	client := *hc
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c := &Connector{cfg: cfg, http: &client}
+	c := &Connector{cfg: cfg, http: &client, now: time.Now}
 
 	if cfg.CredentialID == "" || cfg.CredentialSecret == "" || cfg.PartnerTag == "" {
-		c.configErr = "Set AMAZON_CREATORS_CREDENTIAL_ID, AMAZON_CREATORS_CREDENTIAL_SECRET, AMAZON_CREATORS_CREDENTIAL_VERSION and AMAZON_ASSOCIATE_TAG (an Amazon Associates account with Creators API access) to enable catalog search. Meanwhile agents get a link to Amazon's own search page."
+		c.configErr = "Set AMAZON_CREATORS_CREDENTIAL_ID, AMAZON_CREATORS_CREDENTIAL_SECRET, AMAZON_CREATORS_CREDENTIAL_VERSION and AMAZON_ASSOCIATE_TAG (an Amazon Associates account with Creators API access) to enable catalog search and deals. Meanwhile agents get a link to Amazon's own search page."
 		return c
 	}
 	endpoint, known := tokenEndpoints[cfg.CredentialVersion]
@@ -228,10 +231,22 @@ type catalogItem struct {
 		Listings []struct {
 			Price *struct {
 				Money *money `json:"money"`
+				// Savings/SavingBasis are only present when the listing is
+				// discounted against Amazon's reference price (deals.go).
+				Savings *struct {
+					Money      *money  `json:"money"`
+					Percentage flexInt `json:"percentage"`
+				} `json:"savings"`
+				SavingBasis *struct {
+					Money                *money `json:"money"`
+					SavingBasisType      string `json:"savingBasisType"`
+					SavingBasisTypeLabel string `json:"savingBasisTypeLabel"`
+				} `json:"savingBasis"`
 			} `json:"price"`
 			Availability *struct {
 				Type string `json:"type"`
 			} `json:"availability"`
+			DealDetails *dealDetails `json:"dealDetails"`
 		} `json:"listings"`
 	} `json:"offersV2"`
 }
@@ -261,15 +276,36 @@ type itemsResponse struct {
 }
 
 func (c *Connector) SearchProducts(ctx context.Context, query string, limit int) ([]merchant.Product, error) {
+	if limit <= 0 || limit > maxItems {
+		limit = maxItems
+	}
+	items, err := c.searchItems(ctx, query, limit, catalogResources)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]merchant.Product, 0, len(items))
+	for _, it := range items {
+		if len(out) >= limit {
+			break
+		}
+		p, ok := mapCatalogItem(it, math.Max(0.8-0.05*float64(len(out)), 0.3))
+		if !ok {
+			continue // an item with no priced offer can't be compared
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// searchItems runs one Creators API searchItems call and returns its items
+// in Amazon's own ranking. No results is an empty slice, not an error.
+func (c *Connector) searchItems(ctx context.Context, query string, limit int, resources []string) ([]catalogItem, error) {
 	if !c.configured() {
 		return nil, fmt.Errorf("%w: %s", shared.ErrNotImplemented, c.configErr)
 	}
 	q := strings.TrimSpace(query)
 	if q == "" {
 		return nil, errors.New("amazon: empty search query")
-	}
-	if limit <= 0 || limit > maxItems {
-		limit = maxItems
 	}
 	auth, err := c.authorization()
 	if err != nil {
@@ -280,7 +316,7 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 		"partnerTag":  c.cfg.PartnerTag,
 		"marketplace": c.cfg.Marketplace,
 		"itemCount":   limit,
-		"resources":   catalogResources,
+		"resources":   resources,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("amazon: encoding search request: %w", err)
@@ -304,7 +340,7 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 
 	for _, e := range body.Errors {
 		if e.Code == "NoResults" {
-			return []merchant.Product{}, nil
+			return []catalogItem{}, nil
 		}
 	}
 	switch {
@@ -317,21 +353,9 @@ func (c *Connector) SearchProducts(ctx context.Context, query string, limit int)
 	case decodeErr != nil:
 		return nil, fmt.Errorf("amazon: decoding search response: %w", decodeErr)
 	case body.SearchResult == nil:
-		return []merchant.Product{}, nil
+		return []catalogItem{}, nil
 	}
-
-	out := make([]merchant.Product, 0, len(body.SearchResult.Items))
-	for _, it := range body.SearchResult.Items {
-		if len(out) >= limit {
-			break
-		}
-		p, ok := mapCatalogItem(it, math.Max(0.8-0.05*float64(len(out)), 0.3))
-		if !ok {
-			continue // an item with no priced offer can't be compared
-		}
-		out = append(out, p)
-	}
-	return out, nil
+	return body.SearchResult.Items, nil
 }
 
 // mapCatalogItem converts one Creators API item into a merchant.Product.

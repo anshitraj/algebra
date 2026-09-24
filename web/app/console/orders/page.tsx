@@ -49,14 +49,16 @@ export default function OrdersPage() {
           <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
             {orders.map((o) => (
               <li key={o.order_id}>
-                <Link href={`/console/intents/${o.intent_id}`} className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-primary-tint/40">
+                <Link href={`/console/orders/${o.order_id}`} className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-primary-tint/40">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[0.95rem] text-foreground">{itemsSummary(o.items)}</p>
                     <p className="mt-0.5 text-xs text-muted">
                       {merchantLabel(o.merchant)} · {new Date(o.placed_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })} ·{" "}
                       <span className="font-mono">{o.merchant_order_id}</span>
                       {o.provider_mode !== "real" && (
-                        <span className="ml-1.5 rounded bg-border px-1.5 py-px font-mono text-[0.65rem] uppercase">{o.provider_mode}</span>
+                        <span className="ml-1.5 rounded bg-accent-tint px-1.5 py-px text-[0.65rem] font-semibold text-accent uppercase">
+                          {o.merchant === "demo_checkout" ? "demo" : "test"}
+                        </span>
                       )}
                     </p>
                   </div>

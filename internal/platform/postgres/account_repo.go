@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,9 +27,9 @@ func isUniqueViolation(err error) bool {
 
 func (r *AccountRepo) CreateUser(ctx context.Context, u *account.User) error {
 	_, err := r.db.Pool.Exec(ctx, `
-		INSERT INTO users (id, email, name, avatar_url, password_hash, email_verified_at, created_at)
-		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6, $7)`,
-		u.ID, u.Email, u.Name, u.AvatarURL, u.PasswordHash, u.EmailVerifiedAt, u.CreatedAt)
+		INSERT INTO users (id, email, name, avatar_url, password_hash, email_verified_at, created_at, mode)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6, $7, $8)`,
+		u.ID, u.Email, u.Name, u.AvatarURL, u.PasswordHash, u.EmailVerifiedAt, u.CreatedAt, userMode(u.Mode))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: email already registered", shared.ErrConflict)
@@ -40,18 +41,29 @@ func (r *AccountRepo) CreateUser(ctx context.Context, u *account.User) error {
 
 const accountUserSelect = `
 	SELECT id, email, COALESCE(name,''), COALESCE(avatar_url,''), COALESCE(password_hash,''),
-	       email_verified_at, onboarded_at, created_at
+	       email_verified_at, onboarded_at, created_at, mode
 	FROM users`
+
+// userMode stores an unset mode as live — the safe default: a live account
+// can never reach a demo store.
+func userMode(m account.Mode) string {
+	if m == account.ModeDemo {
+		return string(account.ModeDemo)
+	}
+	return string(account.ModeLive)
+}
 
 func scanAccountUser(row pgx.Row) (*account.User, error) {
 	var u account.User
+	var mode string
 	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.PasswordHash,
-		&u.EmailVerifiedAt, &u.OnboardedAt, &u.CreatedAt); err != nil {
+		&u.EmailVerifiedAt, &u.OnboardedAt, &u.CreatedAt, &mode); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, shared.ErrNotFound
 		}
 		return nil, fmt.Errorf("postgres: scanning user: %w", err)
 	}
+	u.Mode = account.Mode(userMode(account.Mode(mode)))
 	return &u, nil
 }
 
@@ -219,6 +231,56 @@ func (r *AccountRepo) PurgeExpired(ctx context.Context, now time.Time) (int64, e
 		return s.RowsAffected(), fmt.Errorf("postgres: purging reset tokens: %w", err)
 	}
 	return s.RowsAffected() + t.RowsAffected(), nil
+}
+
+// EraseUser scrubs a user's personal data in one transaction: profile and
+// sign-in details, linked OAuth accounts, sessions, reset tokens, saved
+// addresses, shopping preferences and guardrails go; payment methods and
+// agents are revoked with their card details cleared. Orders, intents and
+// audit events stay — financial records — keyed only by the user ID.
+func (r *AccountRepo) EraseUser(ctx context.Context, userID string, at time.Time) error {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: erasing user: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+
+	tag, err := tx.Exec(ctx, `UPDATE users SET
+			email = 'deleted-' || id || '@deleted.invalid',
+			name = NULL, avatar_url = NULL, password_hash = NULL,
+			email_verified_at = NULL, deleted_at = $2
+		WHERE id = $1 AND deleted_at IS NULL`, userID, at)
+	if err != nil {
+		return fmt.Errorf("postgres: erasing user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: user %s", shared.ErrNotFound, userID)
+	}
+	steps := []struct{ what, sql string }{
+		{"oauth identities", `DELETE FROM oauth_identities WHERE user_id = $1`},
+		{"sessions", `DELETE FROM user_sessions WHERE user_id = $1`},
+		{"reset tokens", `DELETE FROM password_reset_tokens WHERE user_id = $1`},
+		{"saved addresses", `DELETE FROM private_profiles WHERE user_id = $1`},
+		{"commerce profile", `DELETE FROM commerce_profiles WHERE user_id = $1`},
+		{"guardrails", `DELETE FROM user_guardrails WHERE user_id = $1`},
+		{"plugin settings", `DELETE FROM user_plugins WHERE user_id = $1`},
+		{"payment methods", `UPDATE payment_sources SET revoked_at = COALESCE(revoked_at, $2),
+			nickname = NULL, last4 = NULL, issuer_meta = NULL, expiry_meta = NULL WHERE user_id = $1`},
+		{"agents", `UPDATE agents SET revoked_at = COALESCE(revoked_at, $2) WHERE user_id = $1`},
+	}
+	for _, s := range steps {
+		args := []any{userID}
+		if strings.Contains(s.sql, "$2") {
+			args = append(args, at)
+		}
+		if _, err := tx.Exec(ctx, s.sql, args...); err != nil {
+			return fmt.Errorf("postgres: erasing %s: %w", s.what, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: erasing user: %w", err)
+	}
+	return nil
 }
 
 func (r *AccountRepo) CreateResetToken(ctx context.Context, hash, userID string, expiresAt time.Time) error {

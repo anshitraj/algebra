@@ -6,10 +6,7 @@ import { DecisionStrip } from "./decision-strip";
 export function Hero() {
   return (
     <section className="relative overflow-hidden pt-16 pb-8 md:pt-20 md:pb-12">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-24 right-[-10%] h-[420px] w-[420px] rounded-full bg-primary/[0.08] blur-3xl md:h-[560px] md:w-[560px]"
-      />
+      <div aria-hidden="true" className="brand-glow pointer-events-none absolute inset-x-0 -top-32 h-[640px]" />
       <Container className="relative grid gap-14 md:grid-cols-[1.15fr_0.85fr] md:items-center md:gap-10">
         <div>
           <h1 className="font-display text-[2.75rem] leading-[1.04] font-semibold tracking-tight text-balance text-foreground md:text-[3.75rem]">

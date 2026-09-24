@@ -36,6 +36,28 @@ func newFakeAccountStore() *fakeAccountStore {
 	}
 }
 
+func (f *fakeAccountStore) EraseUser(_ context.Context, userID string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.users[userID]
+	if !ok {
+		return shared.ErrNotFound
+	}
+	u.Email = "deleted-" + userID + "@deleted.invalid"
+	u.Name, u.PasswordHash = "", ""
+	for k, id := range f.oauth {
+		if id == userID {
+			delete(f.oauth, k)
+		}
+	}
+	for k, s := range f.sessions {
+		if s.UserID == userID {
+			delete(f.sessions, k)
+		}
+	}
+	return nil
+}
+
 func (f *fakeAccountStore) CreateUser(_ context.Context, u *account.User) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

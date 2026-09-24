@@ -23,6 +23,10 @@ export default function SettingsPage() {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -57,6 +61,20 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : "Couldn't sign that device out");
     } finally {
       setRevoking(null);
+    }
+  }
+
+  async function deleteAccount(e: React.FormEvent) {
+    e.preventDefault();
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await api.deleteAccount(confirmText.trim());
+      // The session is already gone server-side; this clears it here too.
+      await signOut();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Couldn't delete the account");
+      setDeleteBusy(false);
     }
   }
 
@@ -169,6 +187,81 @@ export default function SettingsPage() {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-[0.95rem] font-semibold text-foreground">Your data</h2>
+        <div className="mt-3 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+          <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
+            <div className="flex-1">
+              <p className="text-sm text-foreground">Download your data</p>
+              <p className="mt-0.5 text-xs text-muted">Your account, guardrails, preferences, purchase requests, orders and devices, as one JSON file.</p>
+            </div>
+            <a
+              href={api.DATA_EXPORT_URL}
+              download
+              className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl border border-border-strong px-3.5 text-sm font-medium text-foreground hover:bg-background"
+            >
+              Download
+            </a>
+          </div>
+          <div className="px-5 py-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="flex-1">
+                <p className="text-sm text-foreground">Delete account</p>
+                <p className="mt-0.5 text-xs text-muted">
+                  Erases your name, email, sign-ins, saved addresses and preferences, and revokes every agent. Orders stay on record without your details. This can&apos;t be undone.
+                </p>
+              </div>
+              {!deleting && (
+                <button
+                  type="button"
+                  onClick={() => setDeleting(true)}
+                  className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl border border-danger/40 px-3.5 text-sm font-medium text-danger hover:bg-danger-tint"
+                >
+                  Delete account
+                </button>
+              )}
+            </div>
+            {deleting && (
+              <form onSubmit={deleteAccount} className="mt-4 rounded-xl bg-danger-tint/60 p-4">
+                <label className="block">
+                  <span className="text-sm text-foreground">
+                    Type <span className="font-mono font-semibold">DELETE</span> to confirm
+                  </span>
+                  <input
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    autoComplete="off"
+                    autoFocus
+                    className="mt-1.5 h-10 w-full rounded-xl border border-border-strong bg-background px-3 font-mono text-sm text-foreground focus-visible:border-danger focus-visible:outline-none sm:max-w-xs"
+                  />
+                </label>
+                {deleteError && <p className="mt-2 text-sm text-danger">{deleteError}</p>}
+                <div className="mt-3 flex gap-2.5">
+                  <button
+                    type="submit"
+                    disabled={confirmText.trim() !== "DELETE" || deleteBusy}
+                    className="inline-flex h-9 items-center gap-2 rounded-xl bg-danger px-3.5 text-sm font-medium text-danger-tint disabled:opacity-40"
+                  >
+                    {deleteBusy && <Spinner size={13} />} Delete my account
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleting(false);
+                      setConfirmText("");
+                      setDeleteError(null);
+                    }}
+                    className="inline-flex h-9 items-center rounded-xl px-3.5 text-sm font-medium text-muted hover:text-foreground"
+                  >
+                    Keep it
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   );

@@ -212,6 +212,22 @@ func (a *API) listMyApprovals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// getMyOrder is one of the signed-in user's orders with its timeline and
+// delivery address — the console's order page, invoice and map.
+func (a *API) getMyOrder(w http.ResponseWriter, r *http.Request) {
+	sess, ok := a.requireSession(w, r)
+	if !ok {
+		return
+	}
+	d, err := a.b.Orders.OrderForUser(r.Context(), sess.UserID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, d)
+}
+
 func (a *API) listMyOrders(w http.ResponseWriter, r *http.Request) {
 	sess, ok := a.requireSession(w, r)
 	if !ok {

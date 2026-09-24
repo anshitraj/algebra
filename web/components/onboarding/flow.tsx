@@ -618,7 +618,7 @@ function buildBrief(a: Answers, wantsDiet: boolean): BriefLine[] {
 function BriefCard({ brief, saved = false }: { brief: BriefLine[]; saved?: boolean }) {
   const captured = brief.filter((b) => b.text).length;
   return (
-    <div className="rounded-2xl border border-border bg-surface p-6 shadow-[0_18px_40px_-28px_rgba(32,36,29,0.4)]">
+    <div className="rounded-2xl border border-border bg-surface p-6 shadow-[0_18px_40px_-28px_rgba(11,16,32,0.4)]">
       <div className="flex items-center justify-between">
         <h2 className="font-display text-[1.05rem] font-semibold tracking-tight text-foreground">Agent brief</h2>
         <span className="font-mono text-xs text-muted tabular-nums">

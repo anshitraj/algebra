@@ -20,7 +20,9 @@ const csp = [
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   "connect-src 'self' https://*.razorpay.com",
-  "frame-src https://api.razorpay.com https://checkout.razorpay.com",
+  // The order page's delivery map is a Google Maps embed, loaded only when
+  // the user opens it.
+  "frame-src https://api.razorpay.com https://checkout.razorpay.com https://maps.google.com https://www.google.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

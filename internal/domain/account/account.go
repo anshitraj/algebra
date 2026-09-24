@@ -161,6 +161,18 @@ func HashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Mode separates the two kinds of account. A live account shops for real:
+// only real merchants, never a demo or test store. A demo account (one
+// click from the sign-in page, no signup) shops real product listings but
+// checks out through a simulated store with fake money, so anyone can see
+// the whole flow end to end without spending anything.
+type Mode string
+
+const (
+	ModeLive Mode = "live"
+	ModeDemo Mode = "demo"
+)
+
 // User is a person with an account on Algebra's own first-party app.
 type User struct {
 	ID              string     `json:"id"`
@@ -171,7 +183,12 @@ type User struct {
 	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
 	OnboardedAt     *time.Time `json:"onboarded_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
+	// Mode is ModeLive unless the account was created as a demo.
+	Mode Mode `json:"mode"`
 }
+
+// IsDemo reports whether this is a demo account.
+func (u *User) IsDemo() bool { return u.Mode == ModeDemo }
 
 // HasPassword reports whether the user can sign in with email + password
 // (an OAuth-only account has no password until they set one via reset).

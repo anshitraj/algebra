@@ -16,7 +16,7 @@ export function DashboardSection() {
           </p>
         </div>
 
-        <div className="mx-auto mt-12 max-w-3xl">
+        <div className="mx-auto mt-12 max-w-4xl">
           <DashboardPreview />
         </div>
       </Container>

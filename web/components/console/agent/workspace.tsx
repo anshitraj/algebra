@@ -3,15 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import type { AgentEvent } from "@/lib/agent/events";
+import type { AgentEvent, AskedQuestion } from "@/lib/agent/events";
 import { firstName, useSession } from "@/lib/session";
 import { IconArrowUp, IconRefresh, IconShield, IconStop } from "@/components/icons";
 import { useConsoleData } from "../console-data";
 import { ApprovalCard, type ApprovalOutcome } from "./approval-card";
 import { ModelPicker, type ModelChoice, type ProviderEntry } from "./model-picker";
+import { answerText, QuestionCard } from "./question-card";
+import { ThinkingLine } from "./live-activity";
 import { RichText } from "./rich-text";
 import { GuardsPanel, StoresPanel } from "./side-panels";
-import { Timeline, type Step } from "./timeline";
+import { Timeline, type Listing, type Step } from "./timeline";
 
 type Turn = {
   id: string;
@@ -19,6 +21,9 @@ type Turn = {
   steps: Step[];
   notes: string[];
   approvals: { intentId: string; resolved?: ApprovalOutcome }[];
+  /** Clarifying questions the agent asked (ask_user), and the picks sent back. */
+  questions?: AskedQuestion[];
+  answered?: string[];
   reply?: string;
   error?: string;
   status: "running" | "done" | "error" | "stopped";
@@ -27,12 +32,57 @@ type Turn = {
 const SUGGESTIONS = [
   "🥤 Help me purchase a Coke Zero, under ₹100",
   "🍿 Snacks for a movie night for four, under ₹400",
-  "💊 Paracetamol 500mg and a few ORS sachets",
+  "🍫 Chocolates for a birthday, under ₹500",
   "🔌 Compare 20W USB-C chargers under ₹1,200",
 ];
 
 const MODEL_KEY = "algebra:agent-model";
+const CHAT_KEY = "algebra:agent-chat";
+// Provider history carries every tool result, so a long chat can get big.
+// Keep the newest turns that fit; the conversation matters more than its tail.
+const CHAT_MAX_BYTES = 400_000;
 const EASE = [0.16, 1, 0.3, 1] as const;
+
+type SavedChat = { turns: Turn[]; history: unknown[]; lockedProvider: string | null; session: SessionTotals };
+type SessionTotals = { spent: number; orders: number; steps: number };
+
+/** Restores the chat a reload would otherwise throw away. */
+function loadChat(): SavedChat | null {
+  try {
+    const raw = window.localStorage.getItem(CHAT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SavedChat;
+    if (!Array.isArray(parsed.turns) || parsed.turns.length === 0) return null;
+    // A turn interrupted by the reload is no longer running.
+    parsed.turns = parsed.turns.map((t) =>
+      t.status === "running"
+        ? { ...t, status: "stopped", steps: t.steps.map((s) => (s.status === "running" ? { ...s, status: "error", summary: "Interrupted by a page reload" } : s)) }
+        : t
+    );
+    return parsed;
+  } catch {
+    return null; // corrupt or blocked storage — start fresh rather than break the page
+  }
+}
+
+function saveChat(chat: SavedChat) {
+  try {
+    let payload = JSON.stringify(chat);
+    let turns = chat.turns;
+    // Drop the oldest turns until it fits, rather than losing the chat.
+    while (payload.length > CHAT_MAX_BYTES && turns.length > 1) {
+      turns = turns.slice(1);
+      payload = JSON.stringify({ ...chat, turns, history: chat.history });
+    }
+    if (payload.length > CHAT_MAX_BYTES) {
+      window.localStorage.removeItem(CHAT_KEY);
+      return;
+    }
+    window.localStorage.setItem(CHAT_KEY, payload);
+  } catch {
+    // private mode or quota — the chat still works for this page load
+  }
+}
 
 function uid() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random());
@@ -48,6 +98,7 @@ export function AgentWorkspace() {
   const [lockedProvider, setLockedProvider] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [history, setHistory] = useState<unknown[]>([]);
+  const [restored, setRestored] = useState(false);
   const [input, setInput] = useState(() => params.get("prompt") ?? "");
   const [running, setRunning] = useState(false);
   const [session, setSession] = useState({ spent: 0, orders: 0, steps: 0 });
@@ -75,8 +126,31 @@ export function AgentWorkspace() {
   }, []);
 
   useEffect(() => {
+    // localStorage is unavailable during SSR, so restore after mount.
+    const saved = loadChat();
+    if (saved) {
+      setTurns(saved.turns);
+      setHistory(saved.history ?? []);
+      setLockedProvider(saved.lockedProvider ?? null);
+      if (saved.session) setSession(saved.session);
+    }
+    setRestored(true);
     inputRef.current?.focus();
   }, []);
+
+  // Persist after every change, so a reload mid-chat loses nothing.
+  useEffect(() => {
+    if (!restored) return;
+    if (turns.length === 0) {
+      try {
+        window.localStorage.removeItem(CHAT_KEY);
+      } catch {
+        // nothing to clean up if storage was never writable
+      }
+      return;
+    }
+    saveChat({ turns, history, lockedProvider, session });
+  }, [restored, turns, history, lockedProvider, session]);
 
   // Keep the newest content in view unless the user scrolled up to read.
   useEffect(() => {
@@ -109,7 +183,7 @@ export function AgentWorkspace() {
             if (e.status === "running") {
               updateTurn(id, (t) => ({
                 ...t,
-                steps: [...t.steps, { id: e.id, tool: e.tool, title: e.title, status: "running", startedAt: Date.now() }],
+                steps: [...t.steps, { id: e.id, tool: e.tool, title: e.title, hint: e.hint, status: "running", startedAt: Date.now() }],
               }));
               setSession((s) => ({ ...s, steps: s.steps + 1 }));
             } else {
@@ -123,6 +197,9 @@ export function AgentWorkspace() {
             break;
           case "text":
             updateTurn(id, (t) => ({ ...t, notes: [...t.notes, e.text] }));
+            break;
+          case "question":
+            updateTurn(id, (t) => ({ ...t, questions: e.questions }));
             break;
           case "approval":
             updateTurn(id, (t) =>
@@ -209,6 +286,20 @@ export function AgentWorkspace() {
     inputRef.current?.focus();
   }
 
+  // One tap on a listing says what a person would type: which item, where, at what price.
+  function onPick(p: Listing) {
+    if (running) return;
+    const item = p.title || p.name;
+    send(`I'll take this one: "${item}" from ${p.merchant}${p.price ? `, listed at ${p.price}` : ""}.`);
+  }
+
+  function onAnswered(turnId: string, picks: string[]) {
+    const text = answerText(picks);
+    if (!text || running) return;
+    updateTurn(turnId, (t) => ({ ...t, answered: picks }));
+    send(text);
+  }
+
   function onApprovalResolved(turnId: string, intentId: string, o: ApprovalOutcome) {
     updateTurn(turnId, (t) => ({ ...t, approvals: t.approvals.map((a) => (a.intentId === intentId ? { ...a, resolved: o } : a)) }));
     refreshOverview();
@@ -279,7 +370,15 @@ export function AgentWorkspace() {
             ) : (
               <div className="space-y-10">
                 {turns.map((t, i) => (
-                  <TurnView key={t.id} turn={t} latest={i === turns.length - 1} onResolved={onApprovalResolved} />
+                  <TurnView
+                    key={t.id}
+                    turn={t}
+                    latest={i === turns.length - 1}
+                    onResolved={onApprovalResolved}
+                    onAnswered={onAnswered}
+                    onPick={onPick}
+                    canAnswer={!running && i === turns.length - 1}
+                  />
                 ))}
               </div>
             )}
@@ -292,7 +391,7 @@ export function AgentWorkspace() {
               e.preventDefault();
               send(input);
             }}
-            className="mx-auto w-full max-w-[720px] rounded-2xl border border-border-strong bg-surface shadow-[0_10px_30px_-18px_rgba(32,36,29,0.35)] transition-[border-color,box-shadow] focus-within:border-primary/70 focus-within:shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-primary)_10%,transparent),0_10px_30px_-18px_rgba(32,36,29,0.35)]"
+            className="mx-auto w-full max-w-[720px] rounded-2xl border border-border-strong bg-surface shadow-[0_10px_30px_-18px_rgba(11,16,32,0.35)] transition-[border-color,box-shadow] focus-within:border-primary/70 focus-within:shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-primary)_10%,transparent),0_10px_30px_-18px_rgba(11,16,32,0.35)]"
           >
             <label htmlFor="agent-input" className="sr-only">
               Message the agent
@@ -362,10 +461,16 @@ function TurnView({
   turn,
   latest,
   onResolved,
+  onAnswered,
+  onPick,
+  canAnswer,
 }: {
   turn: Turn;
   latest: boolean;
   onResolved: (turnId: string, intentId: string, o: ApprovalOutcome) => void;
+  onAnswered: (turnId: string, picks: string[]) => void;
+  onPick: (p: Listing) => void;
+  canAnswer: boolean;
 }) {
   const running = turn.status === "running";
   return (
@@ -384,22 +489,19 @@ function TurnView({
         </div>
       )}
 
-      <Timeline steps={turn.steps} running={running} defaultOpen={latest} />
+      <Timeline steps={turn.steps} running={running} defaultOpen={latest} onPick={canAnswer && turn.status === "done" ? onPick : undefined} />
 
-      {running && turn.steps.length === 0 && (
-        <div className="flex items-center gap-2.5 text-sm text-muted" aria-live="polite">
-          <span className="flex gap-1" aria-hidden="true">
-            {[0, 1, 2].map((i) => (
-              <motion.span
-                key={i}
-                className="h-1.5 w-1.5 rounded-full bg-primary"
-                animate={{ opacity: [0.25, 1, 0.25] }}
-                transition={{ duration: 1.1, repeat: Infinity, delay: i * 0.18 }}
-              />
-            ))}
-          </span>
-          Thinking
-        </div>
+      {running && turn.steps.length === 0 && !turn.questions && (
+        <ThinkingLine lines={["Reading your request", "Recalling what you like", "Planning what to look for"]} />
+      )}
+
+      {turn.questions && turn.questions.length > 0 && (
+        <QuestionCard
+          questions={turn.questions}
+          answered={turn.answered}
+          active={canAnswer && turn.status === "done"}
+          onAnswer={(picks) => onAnswered(turn.id, picks)}
+        />
       )}
 
       {turn.approvals.map((a) => (
@@ -488,7 +590,7 @@ function EmptyState({
               transition={{ duration: 0.45, delay: 0.1 + i * 0.05, ease: EASE }}
               whileHover={{ y: -2 }}
               whileTap={{ scale: 0.98 }}
-              className="rounded-2xl border border-border-strong bg-surface px-4 py-3.5 text-left text-[0.925rem] leading-snug text-foreground transition-[border-color,box-shadow] hover:border-primary/50 hover:shadow-[0_10px_24px_-18px_rgba(32,36,29,0.5)]"
+              className="rounded-2xl border border-border-strong bg-surface px-4 py-3.5 text-left text-[0.925rem] leading-snug text-foreground transition-[border-color,box-shadow] hover:border-primary/50 hover:shadow-[0_10px_24px_-18px_rgba(11,16,32,0.5)]"
             >
               {s}
             </motion.button>

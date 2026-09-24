@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import * as api from "@/lib/api-client";
 import type { Merchant } from "@/lib/types";
 import { Panel } from "@/components/console/ui";
+import { useSession } from "@/lib/session";
+import { StoreLogo } from "@/components/store-logo";
+import { merchantLabel } from "@/lib/agent/steps";
 
 const CAP_LABELS: { key: keyof Merchant["capabilities"]; label: string }[] = [
   { key: "search", label: "Search" },
@@ -23,12 +26,16 @@ function Dot({ on }: { on: boolean }) {
 }
 
 export default function MerchantsPage() {
+  const mode = useSession().user?.mode;
   const [merchants, setMerchants] = useState<Merchant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.listMerchants().then(setMerchants).catch((err) => setError(err.message));
-  }, []);
+    api
+      .listMerchants()
+      .then((list) => setMerchants(api.merchantsFor(list, mode)))
+      .catch((err) => setError(err.message));
+  }, [mode]);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -63,7 +70,10 @@ export default function MerchantsPage() {
               {merchants.map((m) => (
                 <tr key={m.name} className="border-b border-border last:border-b-0">
                   <td className="px-5 py-4 font-display text-sm font-semibold text-foreground">
-                    {m.name}
+                    <span className="flex items-center gap-3">
+                      <StoreLogo store={m.name} size={30} />
+                      {merchantLabel(m.name)}
+                    </span>
                   </td>
                   <td className="px-5 py-4 font-mono text-xs text-muted">{m.mode}</td>
                   {CAP_LABELS.map((c) => (

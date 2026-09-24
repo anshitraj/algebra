@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import * as api from "@/lib/api-client";
 import type { Merchant, Order, Overview } from "@/lib/types";
 import { merchantLabel } from "@/lib/agent/steps";
+import { StoreLogo } from "@/components/store-logo";
+import { useSession } from "@/lib/session";
 import { IconBan, IconGauge, IconGlobe, IconShield, IconTag } from "@/components/icons";
 import { formatMoney } from "../ui";
 
@@ -128,12 +130,17 @@ function capabilityLabel(m: Merchant) {
 }
 
 export function StoresPanel({ refreshKey }: { refreshKey: number }) {
+  const { user } = useSession();
+  const mode = user?.mode;
   const [merchants, setMerchants] = useState<Merchant[] | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
 
   useEffect(() => {
-    api.listMerchants().then(setMerchants).catch(() => setMerchants([]));
-  }, []);
+    api
+      .listMerchants()
+      .then((list) => setMerchants(api.merchantsFor(list, mode)))
+      .catch(() => setMerchants([]));
+  }, [mode]);
 
   useEffect(() => {
     api
@@ -158,7 +165,13 @@ export function StoresPanel({ refreshKey }: { refreshKey: number }) {
               const ready = !!m.status?.ready;
               return (
                 <li key={m.name} className="flex items-center gap-3 px-5 py-3" title={m.status?.detail}>
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${ready ? "bg-primary" : "bg-border-strong"}`} aria-hidden="true" />
+                  <span className="relative shrink-0">
+                    <StoreLogo store={m.name} size={30} className={ready ? "" : "opacity-70 grayscale"} />
+                    <span
+                      className={`absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full border-2 border-background ${ready ? "bg-success" : "bg-border-strong"}`}
+                      aria-hidden="true"
+                    />
+                  </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm text-foreground">{merchantLabel(m.name)}</p>
                     <p className="truncate text-xs text-muted">{ready ? capabilityLabel(m) : "Needs setup"}</p>
@@ -178,7 +191,8 @@ export function StoresPanel({ refreshKey }: { refreshKey: number }) {
           {orders.map((o) => (
             <li key={o.order_id}>
               <Link href={`/console/intents/${o.intent_id}`} className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-primary-tint/40">
-                <div className="min-w-0">
+                <StoreLogo store={o.merchant} size={28} />
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-foreground">{o.items.map((i) => i.name).join(", ") || merchantLabel(o.merchant)}</p>
                   <p className="text-xs text-muted">
                     {merchantLabel(o.merchant)} · {new Date(o.placed_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}

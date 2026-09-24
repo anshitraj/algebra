@@ -61,7 +61,25 @@ export async function executeTool(
         return { ok: true, data: result };
       }
       case "web_search": {
-        const result = await client.webSearch(identity, str(input, "query"));
+        const max = input.max_price_minor_units;
+        const maxPrice = typeof max === "number" && max > 0 ? Math.round(max) : undefined;
+        const result = await client.webSearch(identity, str(input, "query"), 8, maxPrice);
+        return { ok: true, data: result };
+      }
+      case "community_deals": {
+        const result = await client.communityDeals(identity, str(input, "query"));
+        return { ok: true, data: result };
+      }
+      case "find_deals": {
+        const strings = (key: string) =>
+          Array.isArray(input[key]) ? (input[key] as unknown[]).filter((v): v is string => typeof v === "string" && v.length > 0) : undefined;
+        const price = input.price_minor_units;
+        const result = await client.findDeals(identity, {
+          query: typeof input.query === "string" ? input.query : "",
+          merchants: strings("merchants"),
+          priceMinor: typeof price === "number" && price > 0 ? price : undefined,
+          banks: strings("banks"),
+        });
         return { ok: true, data: result };
       }
       case "search_and_discover": {

@@ -14,6 +14,12 @@ What it takes to run Algebra for real users, what the code already enforces, and
 | Hardening | `APP_ENV=production` refuses to boot with unsafe settings (below); security headers + CSP; strict per-IP limit on sign-in/sign-up/reset (10/min); request IDs + structured access logs that never contain query strings, bodies, cookies or tokens; `/healthz` liveness, `/readyz` checks Postgres + Redis; server timeouts; hourly purge of dead sessions and reset tokens |
 | Billing | Algebra's own plans via Razorpay Subscriptions (UPI/cards): checkout signature verified server-side, webhooks HMAC-verified with replay protection, cancel-at-period-end, free tier capped at 100 order executions/month (402 when exceeded), Growth counts overage |
 | Packaging | `Dockerfile` (API, distroless, non-root, migrations included) and `web/Dockerfile` (Next standalone, non-root) |
+| Abuse & cost | Daily cap on agent messages per person (`AGENT_TURNS_PER_DAY`, lower for demo accounts), demo accounts per IP per day, chat history trimmed before it reaches the model, 4 web searches per reply. Per-IP limits trust only the `X-Forwarded-For` entries our own proxies wrote (`TRUSTED_PROXY_HOPS`) |
+| B2B endpoints | Registering a tenant or integrator needs `ALGEBRA_OPERATOR_TOKEN` (closed in production without it); revoking one needs its own token or the operator's |
+| Data rights (DPDP Act) | Account → Your data: download everything as JSON, or delete the account (personal data erased, agents revoked, orders kept anonymously); a paid plan must be cancelled first |
+| Legal pages | `/terms`, `/privacy`, `/refunds`, `/contact` — what Razorpay's website review and Google's OAuth consent screen check for. Business details come from build args (below); nothing is invented when they're unset |
+| Error handling | Branded 404, route and console error boundaries, root `global-error`; `robots.txt` keeps `/console` and `/api` out of search, `sitemap.xml` lists public pages |
+| CI | Go fmt/vet/build/race tests, migrations on a fresh Postgres, web lint + typecheck + production build |
 
 ## 2. Still demo — needs a partner or account
 
@@ -63,6 +69,9 @@ RAZORPAY_WEBHOOK_SECRET=...                          # webhook: https://app.your
 GROWTH_PRICE_INR=8499                                # or RAZORPAY_PLAN_GROWTH=plan_...
 GOOGLE_CLIENT_ID=... / GOOGLE_CLIENT_SECRET=...       # optional
 GITHUB_CLIENT_ID=... / GITHUB_CLIENT_SECRET=...       # optional
+TRUSTED_PROXY_HOPS=2                                 # Google Cloud HTTPS LB; 1 for nginx / AWS ALB / most LBs (default)
+ALGEBRA_OPERATOR_TOKEN=<openssl rand -hex 32>        # only if you onboard B2B tenants/integrators
+AGENT_TURNS_PER_DAY=200                              # optional; DEMO_AGENT_TURNS_PER_DAY=40, DEMO_ACCOUNTS_PER_IP_PER_DAY=5
 ```
 
 Web (`web/.env.production` / runtime env):
@@ -73,6 +82,18 @@ GEMINI_API_KEY=...                         # and/or ANTHROPIC_API_KEY / OPENAI_A
 GEMINI_MODELS=gemini-3.1-pro-preview,gemini-3.8-flash
 ```
 
+Web **build args** — the legal pages, sitemap and share links are rendered at build time:
+
+```
+PUBLIC_WEB_URL=https://app.yourdomain.com
+LEGAL_ENTITY_NAME=Your Company Private Limited
+LEGAL_ADDRESS=Registered office, one line
+LEGAL_JURISDICTION=Bengaluru
+SUPPORT_EMAIL=support@yourdomain.com
+GRIEVANCE_OFFICER_NAME=Full name
+GRIEVANCE_OFFICER_EMAIL=grievance@yourdomain.com
+```
+
 `APP_ENV=production` refuses to start — listing every problem at once — if `PUBLIC_WEB_URL` isn't https, `ALGEBRA_DEV_AUTH` is on, the mock store is enabled (unless `ALLOW_MOCK_MERCHANT=true` for staging), `RESEND_API_KEY` or `REDIS_ADDR` is missing, `DATABASE_URL` disables TLS, or a CORS origin isn't https. Redis being unreachable at boot is fatal in production.
 
 OAuth redirect URIs to register: `https://app.yourdomain.com/api/v1/auth/oauth/google/callback` and `.../github/callback`.
@@ -81,7 +102,9 @@ OAuth redirect URIs to register: `https://app.yourdomain.com/api/v1/auth/oauth/g
 
 ```bash
 docker build -t algebra-api .
-docker build -t algebra-web --build-arg ALGEBRA_API_URL=http://api.internal:8080 web
+docker build -t algebra-web --build-arg ALGEBRA_API_URL=http://api.internal:8080 \
+  --build-arg PUBLIC_WEB_URL=https://app.yourdomain.com --build-arg LEGAL_ENTITY_NAME="..." \
+  --build-arg SUPPORT_EMAIL=... --build-arg GRIEVANCE_OFFICER_NAME="..." --build-arg GRIEVANCE_OFFICER_EMAIL=... web
 ```
 
 Topology: put the web container behind your HTTPS load balancer on the public domain; keep the API private (only the web container talks to it — the browser reaches `/api/v1` through the web app's rewrite). Probe the API's `/readyz` for readiness and `/healthz` for liveness. Migrations run automatically when the API starts; run one API instance through a deploy before scaling out.
@@ -98,4 +121,7 @@ Topology: put the web container behind your HTTPS load balancer on the public do
 - [ ] API not publicly exposed; web on HTTPS with the security headers intact (check with `curl -I`)
 - [ ] Log sink + an alert on 5xx rate and `/readyz` failures
 - [ ] Razorpay live keys + webhook configured; one real upgrade and cancel tested
+- [ ] Legal build args set (entity, address, support email, Grievance Officer); Terms / Privacy / Refunds reviewed by a lawyer
+- [ ] `TRUSTED_PROXY_HOPS` matches your topology — sign in, open Account, and check "Where you're signed in" shows your real IP, not a proxy's
 - [ ] Sign up, onboard, run one order end to end on production
+- [ ] Download your data and delete a test account from Account → Your data

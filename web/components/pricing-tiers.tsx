@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Container } from "./container";
+import { formatPrice, type Plans } from "@/lib/plans";
 
 type Tier = {
   name: string;
@@ -11,52 +12,61 @@ type Tier = {
   highlighted?: boolean;
 };
 
-const tiers: Tier[] = [
-  {
-    name: "Developer",
-    price: "$0",
-    priceNote: "forever",
-    tagline: "Build and test against the full control plane locally.",
-    features: [
-      "Up to 100 order executions / month",
-      "Mock merchant + sandbox card vault",
-      "Every policy dimension, approvals, audit trail",
-      "Self-host on your own Postgres + Redis",
-      "Community support (GitHub issues)",
-    ],
-    cta: { label: "Read the docs", href: "https://github.com/anshitraj/algebra" },
-  },
-  {
-    name: "Growth",
-    price: "$99",
-    priceNote: "/ month",
-    tagline: "For an agent product with real, running checkouts.",
-    features: [
-      "5,000 order executions / month included, then $0.02 each",
-      "Real merchant connectors — Swiggy Instamart, Amazon, Flipkart, Zepto",
-      "Linked-account + card-vault credential storage",
-      "Email support, 2-business-day response",
-      "Standard uptime SLA",
-    ],
-    cta: { label: "Upgrade", href: "/console/billing?upgrade=1" },
-    highlighted: true,
-  },
-  {
-    name: "Enterprise",
-    price: "Custom",
-    tagline: "Dedicated infrastructure and compliance for scale.",
-    features: [
-      "Unlimited order executions",
-      "VPC / self-hosted deployment",
-      "Per-user merchant sessions, SSO, audit exports",
-      "Custom connectors (e.g. ONDC/Beckn)",
-      "Dedicated support with a negotiated SLA",
-    ],
-    cta: { label: "Talk to us", href: "https://github.com/anshitraj/algebra" },
-  },
-];
+// Prices and allowances come from the API's billing config (lib/plans.ts),
+// so this page always shows what checkout will actually charge.
+function buildTiers(p: Plans): Tier[] {
+  const n = (x: number) => x.toLocaleString("en-IN");
+  return [
+    {
+      name: "Developer",
+      price: formatPrice(0, p.currency),
+      priceNote: "forever",
+      tagline: "Build and test against the full control plane locally.",
+      features: [
+        `Up to ${n(p.developer_included_executions)} order executions / month`,
+        "Mock merchant + sandbox card vault",
+        "Every policy dimension, approvals, audit trail",
+        "Self-host on your own Postgres + Redis",
+        "Community support (GitHub issues)",
+      ],
+      cta: {
+        label: "Read the docs",
+        href: "https://github.com/anshitraj/algebra",
+      },
+    },
+    {
+      name: "Growth",
+      price: formatPrice(p.growth_price_minor_units, p.currency),
+      priceNote: "/ month",
+      tagline: "For an agent product with real, running checkouts.",
+      features: [
+        `${n(p.growth_included_executions)} order executions / month included`,
+        "Real merchant connectors as they go live — Swiggy Instamart first",
+        "Encrypted linked-account credential storage",
+        "Email support, 2-business-day response",
+        "Standard uptime SLA",
+      ],
+      cta: { label: "Upgrade", href: "/console/billing?upgrade=1" },
+      highlighted: true,
+    },
+    {
+      name: "Enterprise",
+      price: "Custom",
+      tagline: "Dedicated infrastructure and compliance for scale.",
+      features: [
+        "Unlimited order executions",
+        "VPC / self-hosted deployment",
+        "Per-user merchant sessions, SSO, audit exports",
+        "Custom connectors (e.g. ONDC/Beckn)",
+        "Dedicated support with a negotiated SLA",
+      ],
+      cta: { label: "Talk to us", href: "/contact" },
+    },
+  ];
+}
 
-export function PricingTiers() {
+export function PricingTiers({ plans }: { plans: Plans }) {
+  const tiers = buildTiers(plans);
   return (
     <section id="pricing-tiers" className="pt-4 pb-20 md:pb-28">
       <Container>
@@ -92,7 +102,10 @@ export function PricingTiers() {
                     key={f}
                     className="flex gap-2.5 text-sm leading-relaxed text-foreground"
                   >
-                    <span aria-hidden="true" className="mt-[3px] shrink-0 text-primary">
+                    <span
+                      aria-hidden="true"
+                      className="mt-[3px] shrink-0 text-primary"
+                    >
                       &#10003;
                     </span>
                     {f}
@@ -117,9 +130,9 @@ export function PricingTiers() {
         <p className="mx-auto mt-10 max-w-2xl text-center text-sm leading-relaxed text-muted">
           Priced on <span className="text-foreground">order executions</span> —
           the moment Algebra actually turns an approved intent into a real
-          merchant order — not on gross order value. Algebra is
-          non-custodial and never holds or moves funds, so it never takes a
-          cut of what you spend.
+          merchant order — not on gross order value. Algebra is non-custodial
+          and never holds or moves funds, so it never takes a cut of what you
+          spend.
         </p>
       </Container>
     </section>

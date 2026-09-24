@@ -8,6 +8,9 @@
 //   - Search: yes, once FLIPKART_AFFILIATE_ID and FLIPKART_AFFILIATE_TOKEN
 //     are set — live catalog data (title, brand, Flipkart price, stock,
 //     product link) from GET /affiliate/1.0/search.json.
+//   - Deals: yes, with the same credentials — Flipkart's published offers
+//     and Deals of the Day from the offers API (see deals.go). They are
+//     shown to the user, never applied: there is no cart to apply them to.
 //   - Cart, checkout, order tracking: no. The Affiliate API is a read-only
 //     catalog/offers API, and Flipkart publishes no third-party cart or order
 //     API and no MCP server. Flipkart therefore never produces a checkout
@@ -31,6 +34,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/project-algebra/algebra/connectors/sanitize"
@@ -54,16 +58,24 @@ const (
 type Config struct {
 	AffiliateID    string
 	AffiliateToken string
-	// BaseURL defaults to DefaultBaseURL. It must be https (loopback http is
-	// accepted for tests).
-	BaseURL    string
-	HTTPClient *http.Client
+	// BaseURL defaults to DefaultBaseURL and OffersBaseURL to
+	// DefaultOffersBaseURL. Both must be https (loopback http is accepted
+	// for tests).
+	BaseURL       string
+	OffersBaseURL string
+	HTTPClient    *http.Client
 }
 
 type Connector struct {
 	cfg       Config
 	http      *http.Client
 	configErr string
+	now       func() time.Time
+
+	// offers caches the offers feed — see offerFeed.
+	offersMu      sync.Mutex
+	offers        []feedOffer
+	offersFetched time.Time
 }
 
 func New(cfg Config) *Connector {
@@ -71,6 +83,10 @@ func New(cfg Config) *Connector {
 		cfg.BaseURL = DefaultBaseURL
 	}
 	cfg.BaseURL = strings.TrimSuffix(cfg.BaseURL, "/")
+	if cfg.OffersBaseURL == "" {
+		cfg.OffersBaseURL = DefaultOffersBaseURL
+	}
+	cfg.OffersBaseURL = strings.TrimSuffix(cfg.OffersBaseURL, "/")
 	hc := cfg.HTTPClient
 	if hc == nil {
 		hc = &http.Client{Timeout: 10 * time.Second}
@@ -81,12 +97,12 @@ func New(cfg Config) *Connector {
 	// redirect, so nothing is followed.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
-	c := &Connector{cfg: cfg, http: &client}
+	c := &Connector{cfg: cfg, http: &client, now: time.Now}
 	switch {
 	case cfg.AffiliateID == "" || cfg.AffiliateToken == "":
-		c.configErr = "Set FLIPKART_AFFILIATE_ID and FLIPKART_AFFILIATE_TOKEN (from the Flipkart Affiliate program) to enable catalog search. Meanwhile agents get a link to Flipkart's own search page."
-	case !safeBaseURL(cfg.BaseURL):
-		c.configErr = "Flipkart affiliate API base URL must be https."
+		c.configErr = "Set FLIPKART_AFFILIATE_ID and FLIPKART_AFFILIATE_TOKEN (from the Flipkart Affiliate program) to enable catalog search and offers. Meanwhile agents get a link to Flipkart's own search page."
+	case !safeBaseURL(cfg.BaseURL) || !safeBaseURL(cfg.OffersBaseURL):
+		c.configErr = "Flipkart affiliate API base URLs must be https."
 	}
 	return c
 }
@@ -119,7 +135,7 @@ func (c *Connector) Status() merchant.Status {
 	return merchant.Status{
 		Integration: merchant.IntegrationAffiliateAPI,
 		Ready:       true,
-		Detail:      "Catalog search via the official Flipkart Affiliate API. Flipkart publishes no third-party cart or order API, so buying happens on Flipkart through the product link.",
+		Detail:      "Catalog search and published offers via the official Flipkart Affiliate API. Flipkart publishes no third-party cart or order API, so buying happens on Flipkart through the product link.",
 		Source:      DocsURL,
 	}
 }

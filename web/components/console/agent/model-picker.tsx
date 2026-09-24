@@ -71,7 +71,7 @@ export function ModelPicker({
             transition={{ duration: 0.15 }}
             role="listbox"
             aria-label="Model"
-            className="absolute bottom-full left-0 z-30 mb-2 max-h-[min(420px,60vh)] w-72 overflow-y-auto rounded-xl border border-border bg-surface p-1.5 shadow-[0_18px_44px_-18px_rgba(32,36,29,0.4)]"
+            className="absolute bottom-full left-0 z-30 mb-2 max-h-[min(420px,60vh)] w-72 overflow-y-auto rounded-xl border border-border bg-surface p-1.5 shadow-[0_18px_44px_-18px_rgba(11,16,32,0.4)]"
           >
             <Option selected={value === null} onClick={() => pick(null)} label="Auto" hint="Best available model" />
             {providers?.map((p) => {

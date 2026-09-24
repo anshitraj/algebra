@@ -430,6 +430,73 @@ paths:
                         ready: { type: boolean, description: "True only when what the connector offers works right now" }
                         detail: { type: string, description: "Plain-language readiness or missing setup; never contains credentials or personal data" }
                         source: { type: string, format: uri, description: "Public documentation the integration is built against" }
+  /deals:
+    get:
+      summary: commerce.find_deals — merchants' own published deals plus curated bank/card offers for a product
+      description: >
+        Informational only: nothing is applied to a cart, and no coupon code is
+        ever returned (neither Amazon's nor Flipkart's API publishes codes).
+        Flipkart offers come from its Affiliate offers feed, Amazon deals from
+        Creators API savings and deal details, bank offers from an
+        operator-curated file with mandatory end dates and terms links.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "What the user is shopping for; empty returns headline offers" }
+        - { name: merchant, in: query, schema: { type: string }, description: "Comma-separated connector names, e.g. amazon,flipkart" }
+        - { name: price, in: query, schema: { type: integer, format: int64, minimum: 0 }, description: "Item price in minor units: filters bank offers by minimum order and estimates the discount" }
+        - { name: banks, in: query, schema: { type: string }, description: "Comma-separated banks the user holds cards from; matching bank offers are flagged and listed first" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10 } }
+      responses:
+        '200':
+          description: Deals, plus notes for any merchant that returned nothing and why
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deals]
+                properties:
+                  deals:
+                    type: array
+                    items:
+                      type: object
+                      required: [merchant, kind, source, title]
+                      properties:
+                        merchant: { type: string }
+                        kind: { type: string, enum: [store_offer, item_deal, bank_offer] }
+                        source: { type: string, enum: [flipkart_affiliate_api, amazon_creators_api, curated_bank_offers] }
+                        title: { type: string }
+                        description: { type: string }
+                        url: { type: string, format: uri }
+                        image_url: { type: string, format: uri }
+                        category: { type: string }
+                        price_minor_units: { type: integer, format: int64 }
+                        was_minor_units: { type: integer, format: int64 }
+                        savings_minor_units: { type: integer, format: int64 }
+                        savings_percent: { type: integer }
+                        basis_label: { type: string, example: "M.R.P." }
+                        currency: { type: string }
+                        badge: { type: string }
+                        prime_only: { type: boolean }
+                        percent_claimed: { type: integer }
+                        starts_at: { type: string, format: date-time }
+                        ends_at: { type: string, format: date-time }
+                        bank: { type: string }
+                        card_types: { type: array, items: { type: string } }
+                        discount_percent: { type: integer }
+                        flat_discount_minor_units: { type: integer, format: int64 }
+                        max_discount_minor_units: { type: integer, format: int64 }
+                        min_order_minor_units: { type: integer, format: int64 }
+                        estimated_discount_minor_units: { type: integer, format: int64, description: "Bank offers: the published terms applied to price — an estimate, the merchant computes the real amount at checkout" }
+                        matches_user_card: { type: boolean }
+                        verified_at: { type: string }
+                  notes:
+                    type: array
+                    items:
+                      type: object
+                      required: [detail]
+                      properties:
+                        merchant: { type: string, description: "Empty for bank offers as a whole" }
+                        detail: { type: string }
   /profiles/shipping:
     post:
       summary: Create a shipping profile (encrypted at rest) — a user action, never exposed via MCP

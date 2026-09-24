@@ -59,7 +59,7 @@ export function IntegrateSection() {
             </div>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-[0_1px_2px_rgba(32,36,29,0.06),0_24px_48px_-24px_rgba(32,36,29,0.28)]">
+          <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-[0_1px_2px_rgba(11,16,32,0.06),0_24px_48px_-24px_rgba(11,16,32,0.28)]">
             <div className="border-b border-border px-4 py-3">
               <span className="font-mono text-xs text-muted">
                 curl -X POST /api/v1/policy/evaluate-transaction

@@ -1,6 +1,10 @@
 package merchant
 
-import "context"
+import (
+	"context"
+
+	"github.com/project-algebra/algebra/internal/domain/deal"
+)
 
 // IntegrationKind names HOW a connector reaches its merchant, following the
 // mandate's §10 priority order (official API > official MCP > partnership
@@ -49,6 +53,17 @@ type StatusReporter interface {
 // human action — nothing in Algebra ever opens, fetches, or automates it.
 type HandoffLinker interface {
 	HandoffURL(query string) string
+}
+
+// DealFinder is implemented by connectors whose merchant publishes deals
+// or offers through an official API (Flipkart's affiliate offers feed,
+// Amazon's Creators API savings and deal details). It is independent of
+// Capabilities().Coupons: nothing here is applied to a cart — deals are
+// shown to the user, who gets them on the merchant's own site. A connector
+// that isn't configured returns shared.ErrNotImplemented with a plain
+// explanation of what's missing.
+type DealFinder interface {
+	FindDeals(ctx context.Context, query string, limit int) ([]deal.Deal, error)
 }
 
 // Warmer is implemented by connectors whose capabilities depend on a network

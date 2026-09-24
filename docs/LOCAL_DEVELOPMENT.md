@@ -55,6 +55,19 @@ Signing out revokes both. Human-only endpoints — approving or rejecting a purc
 
 Google / GitHub buttons appear once their client IDs are set (see `.env.example` for the exact redirect URIs). Password-reset emails go through Resend when `RESEND_API_KEY` is set; otherwise the reset link is printed to the API's log — fine locally, never in production.
 
+## Demo and production accounts
+
+The sign-in page offers two ways in:
+
+- **Demo** — one click, no signup (`POST /api/v1/auth/demo`). Each visitor gets a fresh `demo` account (`users.mode`), already onboarded with a made-up Bengaluru address and guardrails that show every policy outcome (auto-approve under ₹1,000, cap ₹50,000). The agent shops real listings and prices, and checks out through **Demo checkout** (`connectors/democheckout`): simulated cart, quote and order, `DEMO-` order numbers, no money. Guardrails and approvals run for real. Every order gets a page with a delivery tracker, a map and a printable demo invoice (`/console/orders/{id}`). Needs web search (`GEMINI_API_KEY`) to price listings.
+- **Production** — a real (`live`) account. Live accounts are never routed to Demo checkout or the mock test store; they buy only from real, connected stores.
+
+`DEMO_ACCOUNTS=off` hides the demo. `PASSWORD_LOGIN=off` removes email + password sign-in, for when Google/GitHub should be the only way to create a real account.
+
+## Agent evals
+
+`pnpm --dir web eval:agent [scenario-id ...]` has a simulated shopper chat with the real agent (system prompt, tools, provider loop), with Algebra's API replaced by fixtures. A judge model then grades each conversation against a checklist (`web/evals/agent/scenarios.ts`). Reports go to `web/evals/agent/results/`. Needs `GEMINI_API_KEY` in `web/.env.local`. On the free tier, `gemini-3.1-pro` allows 250 requests a day, so run with `EVAL_MODEL=gemini-3.8-flash` when it's used up. Add a scenario whenever a real conversation goes wrong.
+
 ## Scripts without a browser
 
 Mint an agent for an external MCP client from a signed-in session (`POST /api/v1/agents` with the cookie), or — for local scripts written before accounts existed — set `ALGEBRA_DEV_AUTH=true` to re-enable the old shortcuts:

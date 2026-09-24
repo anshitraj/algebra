@@ -18,10 +18,13 @@ type createTenantResponse struct {
 }
 
 // createTenant mints a new Tenant bearer token — the B2B root credential a
-// business integration authenticates its own admin operations with. Open,
-// like createAgent/createIntegrator: a business registers itself, there is
-// nothing to authorize this against yet in this build.
+// business integration authenticates its own admin operations with. Only
+// the operator can register one (requireOperator); open in development.
 func (a *API) createTenant(w http.ResponseWriter, r *http.Request) {
+	if err := a.requireOperator(r); err != nil {
+		writeError(w, err)
+		return
+	}
 	var req createTenantRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, err)
@@ -35,7 +38,20 @@ func (a *API) createTenant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createTenantResponse{TenantID: t.ID, Token: token})
 }
 
+// revokeTenant is callable by the tenant itself (its own token, for its own
+// ID) or by the operator — never by anyone who merely knows the ID.
 func (a *API) revokeTenant(w http.ResponseWriter, r *http.Request) {
+	if !a.isOperator(r) {
+		t, err := a.resolveTenant(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := requireOwnTenant(t, r.PathValue("id")); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if err := a.b.TenantSvc.Revoke(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return

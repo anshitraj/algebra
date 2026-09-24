@@ -169,6 +169,20 @@ export type Order = {
   provider_mode: "mock" | "sandbox" | "real";
 };
 
+export type OrderEvent = { id: string; order_id: string; type: string; payload?: Record<string, unknown>; created_at: string };
+
+/** GET /api/v1/me/orders/{id} — one of the user's own orders, with where it's going. */
+export type OrderDetail = {
+  order: Order;
+  events: OrderEvent[];
+  category?: string;
+  /** No real merchant received it: no money moved, nothing ships. */
+  simulated: boolean;
+  ship_to?: ShippingProfile;
+  ship_to_alias?: string;
+  payment_alias?: string;
+};
+
 // Matches internal/domain/audit.Event exactly (GET .../audit returns the
 // raw slice, unwrapped).
 export type AuditEvent = {
@@ -214,6 +228,45 @@ export type Merchant = {
   mode: "real" | "sandbox" | "mock";
   capabilities: MerchantCapabilities;
   status?: MerchantStatus;
+};
+
+// --- deals (internal/domain/deal, GET /api/v1/deals) ---
+
+export type Deal = {
+  merchant: string;
+  kind: "store_offer" | "item_deal" | "bank_offer";
+  source: "flipkart_affiliate_api" | "amazon_creators_api" | "curated_bank_offers";
+  title: string;
+  description?: string;
+  url?: string;
+  image_url?: string;
+  category?: string;
+  price_minor_units?: number;
+  was_minor_units?: number;
+  savings_minor_units?: number;
+  savings_percent?: number;
+  basis_label?: string;
+  currency?: string;
+  badge?: string;
+  prime_only?: boolean;
+  percent_claimed?: number;
+  starts_at?: string;
+  ends_at?: string;
+  bank?: string;
+  card_types?: string[];
+  discount_percent?: number;
+  flat_discount_minor_units?: number;
+  max_discount_minor_units?: number;
+  min_order_minor_units?: number;
+  /** Bank offers: the published terms applied to the asked-about price. An estimate. */
+  estimated_discount_minor_units?: number;
+  matches_user_card?: boolean;
+  verified_at?: string;
+};
+
+export type DealResults = {
+  deals: Deal[];
+  notes?: { merchant?: string; detail: string }[];
 };
 
 export type PaymentSourceType =
@@ -279,9 +332,31 @@ export type User = {
   has_password: boolean;
   linked_providers: string[];
   created_at: string;
+  /** "demo": shops real listings with a simulated checkout (fake money). */
+  mode: "live" | "demo";
 };
 
-export type AuthProviders = { password: boolean; google: boolean; github: boolean };
+export type AuthProviders = { password: boolean; google: boolean; github: boolean; demo?: boolean };
+
+export type PluginPurpose = "prices" | "deals" | "community";
+export type PluginTrust = "store" | "curated" | "community";
+
+/** A source the agent can read from, as the signed-in person has it set. */
+export type Plugin = {
+  id: string;
+  name: string;
+  purpose: PluginPurpose;
+  trust: PluginTrust;
+  summary: string;
+  sees: string;
+  icon?: string;
+  default_on: boolean;
+  core: boolean;
+  enabled: boolean;
+  config: { subreddits?: string[] };
+  ready: boolean;
+  detail?: string;
+};
 
 export type Guardrails = {
   currency: string;

@@ -18,11 +18,13 @@ import type {
   IntentActivity,
   IntentConstraints,
   IntentItem,
+  OrderDetail,
   Merchant,
   OnboardingAnswers,
   Order,
   Overview,
   PaymentSource,
+  Plugin,
   PolicyDecision,
   Quote,
   SessionInfo,
@@ -105,6 +107,11 @@ export function signIn(email: string, password: string) {
   return apiFetch<{ user: User }>("/api/v1/auth/login", { method: "POST", body: { email, password } });
 }
 
+/** One click, no signup: a fresh demo account (real listings, simulated checkout). */
+export function startDemo() {
+  return apiFetch<{ user: User }>("/api/v1/auth/demo", { method: "POST" });
+}
+
 export function signOut() {
   return apiFetch<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" });
 }
@@ -126,6 +133,23 @@ export function oauthStartURL(provider: "google" | "github", next?: string | nul
 export function updateMe(name: string) {
   return apiFetch<User>("/api/v1/me", { method: "PATCH", body: { name } });
 }
+
+export function listPlugins() {
+  return apiFetch<{ plugins: Plugin[] }>("/api/v1/me/plugins").then((r) => r.plugins);
+}
+
+/** Switches a plugin on or off; `config` sets the Reddit plugin's subreddits. */
+export function setPlugin(id: string, enabled: boolean, config?: { subreddits: string[] }) {
+  return apiFetch<Plugin>(`/api/v1/me/plugins/${encodeURIComponent(id)}`, { method: "PUT", body: config ? { enabled, config } : { enabled } });
+}
+
+/** Erases the signed-in account (DELETE /api/v1/me). `confirm` must be "DELETE". */
+export function deleteAccount(confirm: string) {
+  return apiFetch<{ ok: boolean }>("/api/v1/me", { method: "DELETE", body: { confirm } });
+}
+
+/** Where the browser downloads everything Algebra holds about the user, as JSON. */
+export const DATA_EXPORT_URL = "/api/v1/me/export";
 
 export function listSessions() {
   return apiFetch<SessionInfo[]>("/api/v1/me/sessions");
@@ -161,6 +185,10 @@ export function listMyApprovals() {
 
 export function listMyOrders(limit = 50) {
   return apiFetch<Order[]>(`/api/v1/me/orders?limit=${limit}`);
+}
+
+export function getMyOrder(id: string) {
+  return apiFetch<OrderDetail>(`/api/v1/me/orders/${encodeURIComponent(id)}`);
 }
 
 // --- billing (Algebra's own plans — never purchase money) ---
@@ -285,6 +313,15 @@ export function revokePaymentSource(id: string) {
 }
 
 // --- merchants ---
+
+/**
+ * The stores an account actually uses: the mock test store is never shown,
+ * and the demo checkout only to demo accounts — mirroring how the API routes
+ * purchases by account mode.
+ */
+export function merchantsFor(list: Merchant[], mode: User["mode"] | undefined) {
+  return list.filter((m) => m.name !== "mock" && (mode === "demo" || m.name !== "demo_checkout"));
+}
 
 export function listMerchants() {
   return apiFetch<Merchant[]>("/api/v1/merchants");

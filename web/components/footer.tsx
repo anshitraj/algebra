@@ -33,6 +33,15 @@ const columns = [
       { label: "Build plan", href: "https://github.com/anshitraj/algebra/blob/main/BUILD_PLAN.md" },
     ],
   },
+  {
+    heading: "Legal",
+    links: [
+      { label: "Terms", href: "/terms" },
+      { label: "Privacy", href: "/privacy" },
+      { label: "Refunds & cancellation", href: "/refunds" },
+      { label: "Contact", href: "/contact" },
+    ],
+  },
 ];
 
 export function Footer() {
@@ -52,7 +61,7 @@ export function Footer() {
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
             {columns.map((col) => (
               <div key={col.heading}>
                 <h3 className="text-xs font-medium text-muted">{col.heading}</h3>
@@ -74,7 +83,10 @@ export function Footer() {
         </div>
 
         <div className="mt-16 flex flex-col gap-3 border-t border-border pt-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
-          <p>Algebra never holds your card number, CVV, wallet key or OTP. Policy runs server-side on every purchase.</p>
+          <p>
+            Algebra never holds your card number, CVV, wallet key or OTP. Store names and logos belong to their owners; Algebra isn&apos;t affiliated
+            with them.
+          </p>
           <p>Apache-2.0 licensed.</p>
         </div>
       </Container>

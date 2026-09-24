@@ -72,7 +72,7 @@ export function GetStarted() {
                     aria-selected={on}
                     onClick={() => setActive(i)}
                     className={`relative flex w-full gap-4 overflow-hidden rounded-2xl px-5 py-5 text-left transition-colors ${
-                      on ? "bg-surface shadow-[0_14px_36px_-24px_rgba(32,36,29,0.5)]" : "hover:bg-surface/60"
+                      on ? "bg-surface shadow-[0_14px_36px_-24px_rgba(11,16,32,0.5)]" : "hover:bg-surface/60"
                     }`}
                   >
                     <span
@@ -138,7 +138,7 @@ export function GetStarted() {
   );
 }
 
-const card = "w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-[0_24px_50px_-30px_rgba(32,36,29,0.55)]";
+const card = "w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-[0_24px_50px_-30px_rgba(11,16,32,0.55)]";
 
 function SignInScene() {
   return (
@@ -239,7 +239,7 @@ function AskScene() {
 function ApproveScene() {
   return (
     <div className="w-full max-w-sm space-y-3">
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-accent/60 bg-surface p-4 shadow-[0_24px_50px_-30px_rgba(32,36,29,0.55)]">
+      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-accent/60 bg-surface p-4 shadow-[0_24px_50px_-30px_rgba(11,16,32,0.55)]">
         <div className="flex items-start gap-3">
           <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-tint">
             <IconShield size={17} />

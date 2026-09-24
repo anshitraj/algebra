@@ -20,6 +20,7 @@ import {
   IconSettings,
   IconSliders,
   IconStore,
+  IconPlug,
   IconUser,
   IconWallet,
   IconX,
@@ -42,6 +43,7 @@ const CONTROLS: NavItem[] = [
   { href: "/console/payment-sources", label: "Payment methods", icon: <IconWallet /> },
   { href: "/console/profile", label: "Profile & address", icon: <IconUser /> },
   { href: "/console/merchants", label: "Stores", icon: <IconStore /> },
+  { href: "/console/plugins", label: "Plugins", icon: <IconPlug /> },
   { href: "/console/billing", label: "Plan & billing", icon: <IconReceipt /> },
 ];
 
@@ -80,8 +82,8 @@ function ShellFrame({ user, children }: { user: User; children: React.ReactNode 
   }, [pathname]);
 
   return (
-    <div className="flex h-dvh overflow-hidden">
-      <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border bg-surface/60 md:flex">
+    <div className="flex h-dvh overflow-hidden print:block print:h-auto print:overflow-visible">
+      <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border bg-surface/60 md:flex print:hidden">
         <SidebarContents user={user} pathname={pathname} />
       </aside>
 
@@ -119,7 +121,8 @@ function ShellFrame({ user, children }: { user: User; children: React.ReactNode 
       </AnimatePresence>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
+        {user.mode === "demo" && <DemoBanner />}
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden print:hidden">
           <button
             type="button"
             onClick={() => setDrawer(true)}
@@ -134,7 +137,7 @@ function ShellFrame({ user, children }: { user: User; children: React.ReactNode 
           </Link>
           <MobileApprovalsPill />
         </header>
-        <main className={`min-h-0 flex-1 ${fullBleed ? "overflow-hidden" : "overflow-y-auto"}`}>
+        <main className={`min-h-0 flex-1 ${fullBleed ? "overflow-hidden" : "overflow-y-auto"} print:overflow-visible`}>
           {fullBleed ? children : <div className="px-5 py-8 md:px-10 md:py-10">{children}</div>}
         </main>
       </div>
@@ -275,7 +278,7 @@ function UserMenu({ user }: { user: User }) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 4, scale: 0.98 }}
             transition={{ duration: 0.16 }}
-            className="absolute right-3 bottom-full left-3 mb-2 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-[0_16px_40px_-16px_rgba(32,36,29,0.35)]"
+            className="absolute right-3 bottom-full left-3 mb-2 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-[0_16px_40px_-16px_rgba(11,16,32,0.35)]"
             role="menu"
           >
             <Link
@@ -311,10 +314,26 @@ function UserMenu({ user }: { user: User }) {
         <Avatar user={user} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-foreground">{user.name || user.email.split("@")[0]}</span>
-          <span className="block truncate text-xs text-muted">{user.email}</span>
+          <span className="block truncate text-xs text-muted">{user.mode === "demo" ? "Demo account" : user.email}</span>
         </span>
         <IconChevronDown size={16} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
+    </div>
+  );
+}
+
+// Every screen of a demo account says so: the products and prices are real,
+// the checkout isn't.
+function DemoBanner() {
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-border bg-accent-tint px-4 py-2 text-center text-xs text-accent print:hidden">
+      <span>
+        <strong className="font-semibold">Demo mode</strong> · real products and prices, simulated checkout. No money
+        moves, nothing ships.
+      </span>
+      <Link href="/signup" className="font-semibold underline decoration-accent/40 underline-offset-2 hover:decoration-accent">
+        Create a real account
+      </Link>
     </div>
   );
 }

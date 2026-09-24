@@ -111,6 +111,25 @@ func (s *BillingService) Status(ctx context.Context, userID string) (*BillingSta
 	return st, nil
 }
 
+// Plans is the public price list — what the pricing page shows, from the
+// same numbers checkout charges, so the two can never disagree.
+type Plans struct {
+	Currency          string `json:"currency"`
+	GrowthPriceMinor  int64  `json:"growth_price_minor_units"`
+	DeveloperIncluded int    `json:"developer_included_executions"`
+	GrowthIncluded    int    `json:"growth_included_executions"`
+	CheckoutAvailable bool   `json:"checkout_available"`
+}
+
+func (s *BillingService) Plans() Plans {
+	return Plans{
+		Currency: s.cfg.Currency, GrowthPriceMinor: s.cfg.GrowthAmountMinor,
+		DeveloperIncluded: billing.Entitlements[billing.PlanDeveloper].IncludedExecutions,
+		GrowthIncluded:    billing.Entitlements[billing.PlanGrowth].IncludedExecutions,
+		CheckoutAvailable: s.gateway != nil,
+	}
+}
+
 // Checkout is what the browser needs to open the gateway's checkout. KeyID
 // is the public key; the secret never leaves the server.
 type Checkout struct {

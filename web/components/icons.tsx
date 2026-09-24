@@ -236,6 +236,11 @@ export const IconWallet = (p: IconProps) => (
     <circle cx="16.3" cy="13.8" r="1.2" />
   </Svg>
 );
+export const IconPlug = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 3.5V7M15 3.5V7M6.5 7h11v3.5a5.5 5.5 0 01-11 0V7zM12 16v4.5" />
+  </Svg>
+);
 export const IconStore = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 9.5V20h16V9.5M3 9.5l1.8-5h14.4l1.8 5a2.8 2.8 0 01-5.4 1 2.8 2.8 0 01-5.2 0 2.8 2.8 0 01-5.4-1z" />

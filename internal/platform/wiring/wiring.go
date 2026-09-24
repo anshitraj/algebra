@@ -16,13 +16,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/project-algebra/algebra/connectors/democheckout"
 	"github.com/project-algebra/algebra/connectors/websearch"
 	"github.com/project-algebra/algebra/internal/app"
 	"github.com/project-algebra/algebra/internal/domain/billing"
 	"github.com/project-algebra/algebra/internal/domain/confidential"
 	"github.com/project-algebra/algebra/internal/domain/merchant"
 	"github.com/project-algebra/algebra/internal/domain/paymentprovider"
+	"github.com/project-algebra/algebra/internal/domain/plugin"
 	"github.com/project-algebra/algebra/internal/domain/privacy"
+	"github.com/project-algebra/algebra/internal/platform/bankoffers"
 	"github.com/project-algebra/algebra/internal/platform/config"
 	"github.com/project-algebra/algebra/internal/platform/identity"
 	"github.com/project-algebra/algebra/internal/platform/postgres"
@@ -64,9 +67,11 @@ type Bundle struct {
 
 	// --- Human accounts for the first-party web app (internal/domain/account) ---
 	Billing    *app.BillingService
+	Plugins    *app.PluginService
 	Accounts   *app.AccountService
 	Activity   *app.ActivityService
 	Onboarding *app.OnboardingService
+	Demo       *app.DemoService
 	// OAuthProviders holds only the providers with credentials configured,
 	// keyed by name ("google", "github").
 	OAuthProviders map[string]identity.Provider
@@ -172,7 +177,14 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	intentSvc := app.NewIntentService(intents, agents, auditRepo)
 	discoverySvc := app.NewDiscoveryService(intents, agents, quotes, connectors, auditRepo, cfg.QuoteTTL)
 	discoverySvc.SetResilience(resilience.NewRegistry(5, 30*time.Second), cfg.Merchants.WithDefaults().ConnectorTimeout)
-	discoverySvc.SetURLAllowlist(merchant.NewAllowedDomains(cfg.MerchantURLAllowlist...))
+	urlAllowlist := merchant.NewAllowedDomains(cfg.MerchantURLAllowlist...)
+	discoverySvc.SetURLAllowlist(urlAllowlist)
+	// Bank/card offers are curated by the operator (neither Amazon nor
+	// Flipkart publishes them through an API); off unless BANK_OFFERS_FILE
+	// is set, and FindDeals says so.
+	if path := cfg.Merchants.BankOffersFile; path != "" {
+		discoverySvc.SetBankOffers(bankoffers.NewFile(path, urlAllowlist))
+	}
 	// General web-search fallback is optional: off (commerce.web_search
 	// returns ErrNotImplemented) unless both env vars are set — SetWebSearcher
 	// is simply never called otherwise, and DiscoveryService.SearchWeb's nil
@@ -180,17 +192,62 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	// Gemini with Google Search grounding is preferred: live results with
 	// prices, on the same key the agent already uses. Custom Search remains
 	// for deployments that have it (Google closed it to new customers).
+	var gemini *websearch.Gemini
 	switch {
 	case cfg.GeminiAPIKey != "":
-		discoverySvc.SetWebSearcher(websearch.NewGemini(websearch.GeminiConfig{
+		gemini = websearch.NewGemini(websearch.GeminiConfig{
 			APIKey: cfg.GeminiAPIKey,
 			Model:  cfg.GeminiSearchModel,
-		}))
+		})
+		discoverySvc.SetWebSearcher(gemini)
 	case cfg.GoogleSearchAPIKey != "" && cfg.GoogleSearchEngineID != "":
 		discoverySvc.SetWebSearcher(websearch.New(websearch.Config{
 			APIKey:         cfg.GoogleSearchAPIKey,
 			SearchEngineID: cfg.GoogleSearchEngineID,
 		}))
+	}
+	// Plugins: each person switches the agent's deal and community sources on
+	// or off (internal/domain/plugin). A plugin this server can't run shows
+	// as needing setup instead of silently returning nothing.
+	unready := map[string]string{}
+	if gemini == nil && (cfg.GoogleSearchAPIKey == "" || cfg.GoogleSearchEngineID == "") {
+		unready[plugin.WebPrices] = "Needs GEMINI_API_KEY on the server."
+	}
+	if cfg.Merchants.BankOffersFile == "" {
+		unready[plugin.BankOffers] = "Needs a curated bank offers file (BANK_OFFERS_FILE) on the server."
+	}
+	if cfg.Merchants.AmazonCredentialID == "" || cfg.Merchants.AmazonCredentialSecret == "" {
+		unready[plugin.AmazonDeals] = "Needs Amazon Creators API keys on the server."
+	}
+	if cfg.Merchants.FlipkartAffiliateID == "" || cfg.Merchants.FlipkartAffiliateToken == "" {
+		unready[plugin.FlipkartOffers] = "Needs Flipkart affiliate keys on the server."
+	}
+	if gemini == nil {
+		unready[plugin.RedditDeals] = "Needs GEMINI_API_KEY on the server."
+		unready[plugin.DesiDimeDeals] = "Needs GEMINI_API_KEY on the server."
+	}
+	pluginSvc := app.NewPluginService(postgres.NewPluginRepo(db), agents, unready)
+	discoverySvc.SetPlugins(pluginSvc)
+	if gemini != nil {
+		if cfg.TavilyAPIKey != "" {
+			discoverySvc.SetCommunitySearcher(websearch.NewTavily(websearch.TavilyConfig{APIKey: cfg.TavilyAPIKey}, gemini))
+		} else {
+			discoverySvc.SetCommunitySearcher(gemini)
+		}
+	}
+
+	// Demo accounts check out through the demo store: real listings from the
+	// same cached web search the agent uses, simulated checkout, fake money.
+	// It's registered only when demo accounts are on; live accounts are never
+	// routed to it (SetAccountModes below).
+	if cfg.Auth.DemoAccounts {
+		var search democheckout.SearchFunc
+		if cfg.GeminiAPIKey != "" || (cfg.GoogleSearchAPIKey != "" && cfg.GoogleSearchEngineID != "") {
+			search = discoverySvc.WebListings
+		}
+		demo := democheckout.New(search)
+		connectors.Register(demo)
+		discoverySvc.SetListingObserver(demo.Remember)
 	}
 	quoteSvc := app.NewQuoteService(intents, agents, quotes, connectors)
 	policySvc := app.NewPolicyService(intents, agents, quotes, decisions, approvals, ledger, policyProvider, auditRepo, cfg.ApprovalTTL)
@@ -213,6 +270,7 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 		mailer = identity.NewResendMailer(cfg.Auth.ResendAPIKey, cfg.Auth.EmailFrom)
 	}
 	accountSvc := app.NewAccountService(postgres.NewAccountRepo(db), agentSvc, agents, encryptor, mailer, postgres.NewGuardrailRepo(db), cfg.Auth.SessionTTL)
+	discoverySvc.SetAccountModes(accountSvc)
 	// Every policy evaluation — at request-purchase and again at payment
 	// time — uses the user's own guardrails when they've set any.
 	policySvc.SetUserRules(accountSvc)
@@ -233,6 +291,7 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 	})
 	orderSvc.SetExecutionGate(billingSvc)
 	onboardingSvc := app.NewOnboardingService(accountSvc, commerceProfileSvc, privacyResolver)
+	demoSvc := app.NewDemoService(accountSvc, onboardingSvc)
 	oauthProviders := map[string]identity.Provider{}
 	if cfg.Auth.GoogleClientID != "" && cfg.Auth.GoogleClientSecret != "" {
 		oauthProviders["google"] = identity.NewGoogle(cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret)
@@ -288,7 +347,7 @@ func Build(ctx context.Context, cfg *config.Config, migrationsDir string) (*Bund
 		Policy: policySvc, Approvals: approvalSvc, Orders: orderSvc, Payments: paymentSvc,
 		Privacy: privacyResolver, Connectors: connectors, Idempotency: idempotency, Audit: auditRepo,
 		CommerceProfiles: commerceProfiles, CommerceProfileSvc: commerceProfileSvc,
-		Billing: billingSvc, Accounts: accountSvc, Activity: activitySvc, Onboarding: onboardingSvc, OAuthProviders: oauthProviders,
+		Billing: billingSvc, Plugins: pluginSvc, Accounts: accountSvc, Activity: activitySvc, Onboarding: onboardingSvc, Demo: demoSvc, OAuthProviders: oauthProviders,
 		AuthConfig: cfg.Auth, OAuthStateKey: oauthStateKey,
 		Redis: redisClient, Limiter: limiter,
 		Webhooks: webhookSvc, AuditSvc: auditSvc, Confidential: confidentialProvider,

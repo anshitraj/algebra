@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import type { StepDetail, StepStatus } from "@/lib/agent/events";
+import type { StepDetail, StepHint, StepStatus } from "@/lib/agent/events";
 import { IconBan, IconCheck, IconChevronDown, IconClock, IconExternal, IconX } from "@/components/icons";
+import { LiveActivity, Pulse, ThinkingLine } from "./live-activity";
+import { StoreLogo } from "@/components/store-logo";
 
 export type Step = {
   id: string;
@@ -12,6 +14,7 @@ export type Step = {
   status: StepStatus;
   summary?: string;
   detail?: StepDetail;
+  hint?: StepHint;
   startedAt: number;
   endedAt?: number;
 };
@@ -60,12 +63,19 @@ const PILL: Partial<Record<StepStatus, { label: string; cls: string }>> = {
   error: { label: "Failed", cls: "bg-danger-tint text-danger" },
 };
 
-export function StepRow({ step, last }: { step: Step; last: boolean }) {
+/** One web listing, as the chat shows it. */
+export type Listing = NonNullable<StepDetail["products"]>[number];
+
+export function StepRow({ step, last, onPick }: { step: Step; last: boolean; onPick?: (p: Listing) => void }) {
   // Open by default when there's something the user came for (listings) or
   // must act on (waiting/blocked); their own toggle wins after that.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const hasDetail = !!step.detail && Object.values(step.detail).some((v) => Array.isArray(v) && v.length > 0);
-  const autoOpen = step.status === "waiting" || step.status === "blocked" || (step.detail?.products?.length ?? 0) > 0;
+  const autoOpen =
+    step.status === "waiting" ||
+    step.status === "blocked" ||
+    (step.detail?.products?.length ?? 0) > 0 ||
+    (step.detail?.links?.length ?? 0) > 0;
   const open = toggled ?? autoOpen;
   const pill = PILL[step.status];
   const secs = step.endedAt ? ((step.endedAt - step.startedAt) / 1000).toFixed(1) : null;
@@ -90,12 +100,14 @@ export function StepRow({ step, last }: { step: Step; last: boolean }) {
           {pill && <span className={`rounded-full px-2 py-0.5 text-[0.7rem] font-medium ${pill.cls}`}>{pill.label}</span>}
           {hasDetail && <IconChevronDown size={15} className={`ml-auto shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />}
         </button>
-        {(step.summary || step.status === "running") && (
+        {step.summary && step.status !== "running" && (
           <p className="mt-0.5 flex items-center gap-2 text-sm text-muted">
-            <span className="truncate">{step.status === "running" ? "Working…" : step.summary}</span>
-            {secs && step.status !== "running" && <span className="shrink-0 font-mono text-[0.7rem] text-muted/70 tabular-nums">{secs}s</span>}
+            <span className="truncate">{step.summary}</span>
+            {secs && <span className="shrink-0 font-mono text-[0.7rem] text-muted/70 tabular-nums">{secs}s</span>}
           </p>
         )}
+        {/* Unmounts the instant the result lands; the result rows animate in on their own. */}
+        {step.status === "running" && <LiveActivity tool={step.tool} hint={step.hint} since={step.startedAt} />}
         <AnimatePresence initial={false}>
           {open && hasDetail && step.detail && (
             <motion.div
@@ -105,7 +117,7 @@ export function StepRow({ step, last }: { step: Step; last: boolean }) {
               transition={{ duration: 0.25, ease: EASE }}
               className="overflow-hidden"
             >
-              <Detail detail={step.detail} />
+              <Detail detail={step.detail} onPick={onPick} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -114,14 +126,15 @@ export function StepRow({ step, last }: { step: Step; last: boolean }) {
   );
 }
 
-function Detail({ detail }: { detail: StepDetail }) {
+function Detail({ detail, onPick }: { detail: StepDetail; onPick?: (p: Listing) => void }) {
   return (
     <div className="mt-2.5 overflow-hidden rounded-xl border border-border bg-background/60 text-sm">
       {detail.quotes && detail.quotes.length > 0 && (
         <ul className="divide-y divide-border">
           {detail.quotes.map((q, i) => (
-            <li key={i} className="flex items-start justify-between gap-4 px-3.5 py-2.5">
-              <div className="min-w-0">
+            <li key={i} className="flex items-center justify-between gap-4 px-3.5 py-2.5">
+              <StoreLogo store={q.merchant} size={32} />
+              <div className="min-w-0 flex-1">
                 <p className="font-medium text-foreground">{q.merchant}</p>
                 <p className="truncate text-xs text-muted">{q.items}</p>
               </div>
@@ -135,40 +148,9 @@ function Detail({ detail }: { detail: StepDetail }) {
       )}
       {detail.products && detail.products.length > 0 && (
         <ul className="divide-y divide-border">
-          {detail.products.map((p, i) => {
-            const body = (
-              <>
-                <div className="min-w-0 flex-1">
-                  <p className="line-clamp-2 text-foreground">{p.name}</p>
-                  <p className="mt-0.5 text-xs text-muted">{p.merchant}</p>
-                </div>
-                <span className="flex shrink-0 items-center gap-2.5">
-                  {p.price ? (
-                    <span className="font-mono text-foreground tabular-nums">{p.price}</span>
-                  ) : (
-                    <span className="text-xs text-muted">See price</span>
-                  )}
-                  {p.url && <IconExternal size={14} className="text-muted transition-colors group-hover:text-primary" />}
-                </span>
-              </>
-            );
-            return (
-              <li key={i}>
-                {p.url ? (
-                  <a
-                    href={p.url}
-                    target="_blank"
-                    rel="noopener noreferrer nofollow"
-                    className="group flex items-center justify-between gap-4 px-3.5 py-2.5 transition-colors hover:bg-primary-tint/50"
-                  >
-                    {body}
-                  </a>
-                ) : (
-                  <div className="flex items-center justify-between gap-4 px-3.5 py-2.5">{body}</div>
-                )}
-              </li>
-            );
-          })}
+          {detail.products.map((p, i) => (
+            <ProductRow key={i} p={p} onPick={onPick} />
+          ))}
         </ul>
       )}
       {detail.links && detail.links.length > 0 && (
@@ -207,6 +189,119 @@ function Detail({ detail }: { detail: StepDetail }) {
   );
 }
 
+/** A community code, one click to copy. Unverified, so it never looks like a price. */
+function CodeChip({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard?.writeText(code).then(
+          () => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          },
+          () => {}
+        );
+      }}
+      title="Copy code — it may have expired"
+      className="inline-flex items-center gap-1 rounded-md border border-dashed border-accent/60 bg-accent-tint px-1.5 py-px font-mono text-[0.7rem] font-medium text-accent"
+    >
+      {copied ? "Copied" : code}
+    </button>
+  );
+}
+
+/** Where a community post lives, as an icon: reddit.com for r/…, the site's own otherwise. */
+function tipIcon(merchant: string) {
+  if (merchant.startsWith("r/") || merchant === "Reddit") return "reddit.com";
+  if (merchant === "DesiDime") return "desidime.com";
+  return merchant;
+}
+
+/** The product's own photo when the store publishes one, else the store's icon. */
+function Thumb({ p }: { p: Listing }) {
+  const [broken, setBroken] = useState(false);
+  if (!p.image || broken) return <StoreLogo store={p.posted || p.code ? tipIcon(p.merchant) : p.merchant} size={44} />;
+  return (
+    // Store-published photo from hosts that vary, so a plain img that
+    // falls back to the store's icon rather than next/image.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={p.image}
+      alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setBroken(true)}
+      className="h-11 w-11 shrink-0 rounded-xl border border-border bg-white object-contain p-0.5"
+    />
+  );
+}
+
+function ProductRow({ p, onPick }: { p: Listing; onPick?: (p: Listing) => void }) {
+  // Not a single item, or likely a scam listing: nothing to pick.
+  const pickable = !!onPick && !p.storePage && !p.warning;
+  return (
+    <li className="flex items-center gap-3 px-3.5 py-3 transition-colors hover:bg-primary-tint/30">
+      <Thumb p={p} />
+      <div className="min-w-0 flex-1">
+        {p.url ? (
+          <a href={p.url} target="_blank" rel="noopener noreferrer nofollow" className="line-clamp-2 text-foreground decoration-border-strong underline-offset-2 hover:underline">
+            {p.name}
+          </a>
+        ) : (
+          <p className="line-clamp-2 text-foreground">{p.name}</p>
+        )}
+        <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted">
+          <span className="font-medium text-foreground/80">{p.merchant}</span>
+          {p.eta && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={p.etaTypical ? "The store's usual delivery time — yours depends on your pincode" : "Delivery time the listing showed"}
+            >
+              <IconClock size={12} />
+              {p.etaTypical ? `Typically ${p.eta}` : p.eta}
+            </span>
+          )}
+          {p.posted && <span>{p.posted}</span>}
+          {p.storePage && !p.code && !p.posted && <span className="rounded-md bg-background px-1.5 py-px">Store page</span>}
+          {p.code && <CodeChip code={p.code} />}
+        </p>
+        {p.warning && <p className="mt-1 text-xs font-medium text-danger">{p.warning}</p>}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        {p.price ? (
+          <span className="font-mono text-foreground tabular-nums">{p.price}</span>
+        ) : (
+          <span className="text-xs text-muted">{p.storePage ? "Browse" : "See price"}</span>
+        )}
+        <div className="flex items-center gap-1.5">
+          {pickable && (
+            <button
+              type="button"
+              onClick={() => onPick?.(p)}
+              className="inline-flex h-7 items-center rounded-lg bg-primary px-2.5 text-xs font-medium text-primary-tint transition-transform active:scale-95"
+            >
+              Select
+            </button>
+          )}
+          {p.url && (
+            <a
+              href={p.url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              aria-label={`Open on ${p.merchant}`}
+              className="grid h-7 w-7 place-items-center rounded-lg border border-border text-muted transition-colors hover:border-primary/50 hover:text-primary"
+            >
+              <IconExternal size={13} />
+            </a>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function formatEta(eta: string) {
   const d = new Date(eta);
   if (Number.isNaN(d.getTime())) return eta;
@@ -215,7 +310,18 @@ function formatEta(eta: string) {
   return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
-export function Timeline({ steps, running, defaultOpen }: { steps: Step[]; running: boolean; defaultOpen: boolean }) {
+export function Timeline({
+  steps,
+  running,
+  defaultOpen,
+  onPick,
+}: {
+  steps: Step[];
+  running: boolean;
+  defaultOpen: boolean;
+  /** Present only while the user can act on this turn's listings. */
+  onPick?: (p: Listing) => void;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   if (steps.length === 0) return null;
   const expanded = open || running;
@@ -223,6 +329,7 @@ export function Timeline({ steps, running, defaultOpen }: { steps: Step[]; runni
   const first = steps[0].startedAt;
   const last = steps[steps.length - 1].endedAt ?? steps[steps.length - 1].startedAt;
   const outcome = steps.find((s) => s.status === "waiting" || s.status === "blocked") ?? steps[steps.length - 1];
+  const current = steps.find((s) => s.status === "running");
 
   return (
     <div className="rounded-2xl border border-border bg-surface">
@@ -233,10 +340,11 @@ export function Timeline({ steps, running, defaultOpen }: { steps: Step[]; runni
         disabled={running}
         className="flex w-full items-center gap-2.5 px-4 py-3 text-left disabled:cursor-default"
       >
-        <span className="text-sm font-medium text-foreground">
-          {running ? "Working" : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
+        {running && <Pulse size={16} />}
+        <span className={`min-w-0 truncate text-sm font-medium text-foreground ${running ? "agent-shimmer-text" : "shrink-0"}`}>
+          {running ? (current?.title ?? "Thinking") : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
         </span>
-        <span className="truncate text-sm text-muted">
+        <span className={`truncate text-sm text-muted ${running ? "shrink-0" : ""}`}>
           {running ? `· ${done} done` : `· ${outcome.summary ?? outcome.title} · ${((last - first) / 1000).toFixed(1)}s`}
         </span>
         {!running && <IconChevronDown size={15} className={`ml-auto shrink-0 text-muted transition-transform ${expanded ? "rotate-180" : ""}`} />}
@@ -252,8 +360,14 @@ export function Timeline({ steps, running, defaultOpen }: { steps: Step[]; runni
           >
             <ol className="border-t border-border px-4 pt-4 pb-4">
               {steps.map((s, i) => (
-                <StepRow key={s.id} step={s} last={i === steps.length - 1} />
+                <StepRow key={s.id} step={s} last={i === steps.length - 1 && !(running && !current)} onPick={onPick} />
               ))}
+              {running && !current && (
+                // Between steps the model is reading results — show that, not a frozen list.
+                <motion.li initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, ease: EASE }} className="relative">
+                  <ThinkingLine lines={["Going through what came back", "Checking it against what you asked for", "Deciding the next step"]} />
+                </motion.li>
+              )}
             </ol>
           </motion.div>
         )}
